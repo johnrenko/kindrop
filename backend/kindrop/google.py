@@ -13,6 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
+from .amazon_mail import AMAZON_DOMAINS
 from .crypto import SecretStore
 from .database import Database
 from .models import AppSettings
@@ -196,36 +197,45 @@ class GoogleGmailGateway:
             raise AmbiguousSendError("The Gmail send response was not received") from error
         return response["id"]
 
-    def find_amazon_messages(self) -> list[GmailMessage]:
-        gmail = self.services.gmail()
+    def list_amazon_message_ids(self) -> list[str]:
+        sender_filter = "from:(" + " OR ".join(sorted(AMAZON_DOMAINS)) + ")"
         response = (
-            gmail.users()
+            self.services.gmail()
+            .users()
             .messages()
-            .list(userId="me", q='"Send to Kindle" newer_than:7d', maxResults=100)
+            .list(
+                userId="me",
+                q=f'{sender_filter} "Send to Kindle" newer_than:7d',
+                maxResults=100,
+            )
             .execute()
         )
-        messages: list[GmailMessage] = []
-        for item in response.get("messages", []):
-            raw = gmail.users().messages().get(userId="me", id=item["id"], format="raw").execute()
-            internal_date: datetime | None = None
-            if raw.get("internalDate"):
-                internal_date = datetime.fromtimestamp(int(raw["internalDate"]) / 1000, UTC)
-            payload = base64.urlsafe_b64decode(raw["raw"].encode())
-            parsed = BytesParser(policy=policy.default).parsebytes(payload)
-            text_parts: list[str] = []
-            for part in parsed.walk():
-                if part.get_content_type() in {"text/plain", "text/html"}:
-                    try:
-                        text_parts.append(part.get_content())
-                    except (LookupError, UnicodeDecodeError):
-                        continue
-            messages.append(
-                GmailMessage(
-                    id=item["id"],
-                    sender=str(parsed.get("From", "")),
-                    subject=str(parsed.get("Subject", "")),
-                    text="\n".join(text_parts),
-                    internal_date=internal_date,
-                )
-            )
-        return messages
+        return [item["id"] for item in response.get("messages", [])]
+
+    def fetch_message(self, message_id: str) -> GmailMessage:
+        raw = (
+            self.services.gmail()
+            .users()
+            .messages()
+            .get(userId="me", id=message_id, format="raw")
+            .execute()
+        )
+        internal_date: datetime | None = None
+        if raw.get("internalDate"):
+            internal_date = datetime.fromtimestamp(int(raw["internalDate"]) / 1000, UTC)
+        payload = base64.urlsafe_b64decode(raw["raw"].encode())
+        parsed = BytesParser(policy=policy.default).parsebytes(payload)
+        text_parts: list[str] = []
+        for part in parsed.walk():
+            if part.get_content_type() in {"text/plain", "text/html"}:
+                try:
+                    text_parts.append(part.get_content())
+                except (LookupError, UnicodeDecodeError):
+                    continue
+        return GmailMessage(
+            id=message_id,
+            sender=str(parsed.get("From", "")),
+            subject=str(parsed.get("Subject", "")),
+            text="\n".join(text_parts),
+            internal_date=internal_date,
+        )

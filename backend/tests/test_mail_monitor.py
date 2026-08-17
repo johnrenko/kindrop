@@ -20,9 +20,14 @@ VERIFICATION_BODY = (
 class FakeGmail:
     def __init__(self, messages: list[GmailMessage]) -> None:
         self.messages = messages
+        self.fetched: list[str] = []
 
-    def find_amazon_messages(self) -> list[GmailMessage]:
-        return self.messages
+    def list_amazon_message_ids(self) -> list[str]:
+        return [message.id for message in self.messages]
+
+    def fetch_message(self, message_id: str) -> GmailMessage:
+        self.fetched.append(message_id)
+        return next(message for message in self.messages if message.id == message_id)
 
 
 class FakeVerifier:
@@ -145,6 +150,29 @@ def test_processed_messages_are_not_verified_twice(tmp_path: Path) -> None:
     monitor.run_once()
 
     assert len(verifier.calls) == 1
+
+
+def test_processed_messages_are_not_fetched_again(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    with database.session() as session:
+        _add_delivery(session, 1, SENT_BASE)
+        second = _add_delivery(session, 2, SENT_BASE + timedelta(minutes=1))
+        session.commit()
+
+    verifier = FakeVerifier()
+    gmail = FakeGmail([_verification_message(1, SENT_BASE + timedelta(seconds=25))])
+    monitor = AmazonMailMonitor(database, gmail, verifier)
+    monitor.run_once()
+    assert gmail.fetched == ["msg-1"]
+
+    gmail.messages.append(
+        _verification_message(2, SENT_BASE + timedelta(minutes=1, seconds=25))
+    )
+    monitor.run_once()
+
+    assert gmail.fetched == ["msg-1", "msg-2"]
+    with database.session() as session:
+        assert session.get(Delivery, second).status == "verified"
 
 
 def test_message_far_from_any_delivery_is_left_alone(tmp_path: Path) -> None:

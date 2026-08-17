@@ -59,11 +59,16 @@ class AmazonMailMonitor:
         self.verifier = verifier
 
     def run_once(self) -> None:
-        messages = self.gmail.find_amazon_messages()
         with self.database.session() as session:
             processed = set(
                 session.scalars(select(Event.entity_id).where(Event.kind == "mail.processed"))
             )
+        messages = [
+            self.gmail.fetch_message(message_id)
+            for message_id in self.gmail.list_amazon_message_ids()
+            if message_id not in processed
+        ]
+        with self.database.session() as session:
             deliveries = session.scalars(
                 select(Delivery)
                 .options(selectinload(Delivery.artifact).selectinload(Artifact.job))
@@ -79,8 +84,6 @@ class AmazonMailMonitor:
                 messages, key=lambda m: m.internal_date or datetime.max.replace(tzinfo=UTC)
             )
             for message in ordered:
-                if message.id in processed:
-                    continue
                 result = classify_amazon_message(
                     sender=message.sender, subject=message.subject, text=message.text
                 )
