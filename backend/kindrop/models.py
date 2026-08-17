@@ -60,6 +60,7 @@ class Scan(Base):
     discovered_count: Mapped[int] = mapped_column(Integer, default=0)
     processed_count: Mapped[int] = mapped_column(Integer, default=0)
     cancel_requested: Mapped[bool] = mapped_column(default=False)
+    pause_requested: Mapped[bool] = mapped_column(default=False)
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

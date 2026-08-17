@@ -104,6 +104,7 @@
   .workbench__margin { padding: 2rem 0 2rem 3rem; border-left: 1px solid var(--line); }
   .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
   .scan-sheet { padding-top: 2rem; }
+  .scan-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin-top: 1.4rem; }
   .scan-facts { display: grid; grid-template-columns: repeat(3, 1fr); margin: 2.5rem 0; }
   .scan-facts div { padding: .8rem 1.4rem; border-left: 1px solid var(--line); }
   .scan-facts div:first-child { padding-left: 0; border: 0; }

@@ -75,4 +75,73 @@ describe("Dashboard", () => {
       expect.objectContaining({ method: "POST" }),
     );
   });
+
+  it("pauses and stops a running scan", async () => {
+    const runningScan = {
+      id: "scan-1",
+      status: "scanning",
+      progress: 40,
+      discovered_count: 5,
+      processed_count: 2,
+      error: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (init?.method === "POST") return Response.json({ status: "accepted" });
+      if (path === "/api/scans") return Response.json([runningScan]);
+      return Response.json(payloads[path]);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <DashboardPage />
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Pause scan" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Stop scan" }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/scans/scan-1/pause",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/scans/scan-1/cancel",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("offers to resume a paused scan", async () => {
+    const pausedScan = {
+      id: "scan-2",
+      status: "paused",
+      progress: 40,
+      discovered_count: 5,
+      processed_count: 2,
+      error: null,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (init?.method === "POST") return Response.json({ status: "queued" });
+      if (path === "/api/scans") return Response.json([pausedScan]);
+      return Response.json(payloads[path]);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <DashboardPage />
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Resume scan" }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/scans/scan-2/resume",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
 });

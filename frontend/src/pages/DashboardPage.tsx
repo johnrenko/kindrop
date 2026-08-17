@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, FolderSearch, RefreshCw } from "lucide-react";
+import { ArrowRight, FolderSearch, Pause, Play, RefreshCw, Square } from "lucide-react";
 
 import { api } from "../api";
 import { EmptyState } from "../components/EmptyState";
@@ -21,9 +21,16 @@ export function DashboardPage() {
       await client.invalidateQueries({ queryKey: queryKeys.scans });
     },
   });
+  const refreshScans = async () => {
+    await client.invalidateQueries({ queryKey: queryKeys.scans });
+  };
+  const pauseScan = useMutation({ mutationFn: api.pauseScan, onSuccess: refreshScans });
+  const resumeScan = useMutation({ mutationFn: api.resumeScan, onSuccess: refreshScans });
+  const stopScan = useMutation({ mutationFn: api.cancelScan, onSuccess: refreshScans });
 
   const latestScan = scans.data?.[0];
   const active = latestScan && ["queued", "scanning"].includes(latestScan.status);
+  const paused = latestScan?.status === "paused";
   const readyCount = candidates.data?.filter((candidate) => candidate.status === "ready").length ?? 0;
   const recentJobs = jobs.data?.slice(0, 4) ?? [];
 
@@ -40,10 +47,10 @@ export function DashboardPage() {
           <button
             className="button button--primary"
             onClick={() => startScan.mutate()}
-            disabled={!setup.data?.ready || Boolean(active) || startScan.isPending}
+            disabled={!setup.data?.ready || Boolean(active) || paused || startScan.isPending}
           >
             <FolderSearch size={18} aria-hidden="true" />
-            {active ? "Scanning Drive…" : "Scan source folder"}
+            {active ? "Scanning Drive…" : paused ? "Scan paused" : "Scan source folder"}
           </button>
           {startScan.error && <p className="form-error">{startScan.error.message}</p>}
         </div>
@@ -71,7 +78,46 @@ export function DashboardPage() {
           </div>
           {latestScan ? (
             <div className="scan-sheet">
-              <Progress value={latestScan.progress} label={active ? "Inspecting archives" : "Scan progress"} />
+              <Progress
+                value={latestScan.progress}
+                label={active ? "Inspecting archives" : paused ? "Paused" : "Scan progress"}
+              />
+              {(active || paused) && (
+                <div className="scan-actions">
+                  {paused ? (
+                    <button
+                      className="button button--secondary"
+                      onClick={() => resumeScan.mutate(latestScan.id)}
+                      disabled={resumeScan.isPending}
+                    >
+                      <Play size={16} aria-hidden="true" />
+                      Resume scan
+                    </button>
+                  ) : (
+                    <button
+                      className="button button--secondary"
+                      onClick={() => pauseScan.mutate(latestScan.id)}
+                      disabled={pauseScan.isPending}
+                    >
+                      <Pause size={16} aria-hidden="true" />
+                      Pause scan
+                    </button>
+                  )}
+                  <button
+                    className="button button--danger"
+                    onClick={() => stopScan.mutate(latestScan.id)}
+                    disabled={stopScan.isPending}
+                  >
+                    <Square size={16} aria-hidden="true" />
+                    Stop scan
+                  </button>
+                  {(pauseScan.error || resumeScan.error || stopScan.error) && (
+                    <p className="form-error">
+                      {(pauseScan.error ?? resumeScan.error ?? stopScan.error)?.message}
+                    </p>
+                  )}
+                </div>
+              )}
               <dl className="scan-facts">
                 <div><dt>New revisions</dt><dd>{latestScan.discovered_count}</dd></div>
                 <div><dt>Inspected</dt><dd>{latestScan.processed_count}</dd></div>

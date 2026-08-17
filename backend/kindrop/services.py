@@ -115,10 +115,17 @@ class ScanProcessor:
                     scan.error = "Choose a Source Folder before scanning"
                     session.commit()
                 return
+            if scan.cancel_requested:
+                scan.status = "cancelled"
+                scan.completed_at = datetime.now(UTC)
+                add_event(session, "scan", scan.id, "scan.cancelled")
+                session.commit()
+                return
             scan.status = "scanning"
             add_event(session, "scan", scan.id, "scan.started")
             session.commit()
             folder_id = settings.source_folder_id
+            already_processed = scan.processed_count
 
         try:
             comics = list(self.drive.walk_comics(folder_id))
@@ -138,7 +145,7 @@ class ScanProcessor:
                 )
                 if not exists:
                     new_comics.append((comic, fingerprint))
-            scan.discovered_count = len(new_comics)
+            scan.discovered_count = already_processed + len(new_comics)
             session.commit()
 
         scan_directory = self.cache_root / "scans" / scan_id
@@ -152,6 +159,12 @@ class ScanProcessor:
                     scan.status = "cancelled"
                     scan.completed_at = datetime.now(UTC)
                     add_event(session, "scan", scan.id, "scan.cancelled")
+                    session.commit()
+                    return
+                if scan.pause_requested:
+                    scan.status = "paused"
+                    scan.pause_requested = False
+                    add_event(session, "scan", scan.id, "scan.paused")
                     session.commit()
                     return
 
@@ -209,8 +222,9 @@ class ScanProcessor:
                     )
                 )
                 scan = session.get(Scan, scan_id)
-                scan.processed_count = index
-                scan.progress = round(index / len(new_comics) * 100) if new_comics else 100
+                scan.processed_count = already_processed + index
+                total = already_processed + len(new_comics)
+                scan.progress = round(scan.processed_count / total * 100) if total else 100
                 add_event(
                     session,
                     "scan",
@@ -226,7 +240,7 @@ class ScanProcessor:
             scan.status = "completed"
             scan.progress = 100
             scan.completed_at = datetime.now(UTC)
-            add_event(session, "scan", scan.id, "scan.completed", count=len(new_comics))
+            add_event(session, "scan", scan.id, "scan.completed", count=scan.processed_count)
             session.commit()
 
     def _fail(self, scan_id: str, message: str) -> None:

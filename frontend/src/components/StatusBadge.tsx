@@ -1,6 +1,7 @@
 const labels: Record<string, string> = {
   queued: "Queued",
   scanning: "Scanning",
+  paused: "Paused",
   completed: "Completed",
   completed_with_errors: "Completed with errors",
   ready: "Ready",

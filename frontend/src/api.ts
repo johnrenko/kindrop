@@ -40,6 +40,8 @@ export const api = {
   scans: () => request<Scan[]>("/api/scans"),
   startScan: () => request<Scan>("/api/scans", { method: "POST" }),
   cancelScan: (id: string) => request(`/api/scans/${id}/cancel`, { method: "POST" }),
+  pauseScan: (id: string) => request(`/api/scans/${id}/pause`, { method: "POST" }),
+  resumeScan: (id: string) => request(`/api/scans/${id}/resume`, { method: "POST" }),
   candidates: () => request<Candidate[]>("/api/candidates"),
   updateCandidate: (id: string, update: CandidateUpdate) =>
     request<Candidate>(`/api/candidates/${id}`, {

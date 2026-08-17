@@ -79,8 +79,12 @@ class Worker:
     def recover_interrupted_work(self) -> None:
         with self.database.session() as session:
             for scan in session.scalars(select(Scan).where(Scan.status == "scanning")):
-                scan.status = "queued"
-                scan.error = "The previous scan was interrupted and has been resumed"
+                if scan.pause_requested:
+                    scan.status = "paused"
+                    scan.pause_requested = False
+                else:
+                    scan.status = "queued"
+                    scan.error = "The previous scan was interrupted and has been resumed"
             for job in session.scalars(
                 select(Job).where(Job.status.in_(["downloading", "converting", "sending"]))
             ):

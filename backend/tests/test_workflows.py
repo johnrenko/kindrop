@@ -100,6 +100,72 @@ def test_scan_yields_to_dispatches_between_each_inspected_item(tmp_path: Path) -
     assert len(yields) == 2, "the scan must hand control back before each item"
 
 
+def test_scan_pauses_at_the_next_item_and_resumes_where_it_stopped(tmp_path: Path) -> None:
+    archive = tmp_path / "source.cbz"
+    make_cbz(archive)
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    payload = archive.read_bytes()
+    checksum = hashlib.md5(payload).hexdigest()  # noqa: S324 - Drive supplies MD5
+
+    class TwoComicDrive(FakeDrive):
+        def walk_comics(self, _folder_id: str) -> list[DriveComic]:
+            return [
+                DriveComic(
+                    file_id=f"drive-{index}",
+                    name=f"volume-{index}.cbz",
+                    path=f"Series/volume-{index}.cbz",
+                    size=len(payload),
+                    checksum=checksum,
+                    modified_time="2026-08-16T10:00:00Z",
+                )
+                for index in (1, 2)
+            ]
+
+    with database.session() as session:
+        session.add(AppSettings(id=1, source_folder_id="root-folder"))
+        scan = Scan()
+        session.add(scan)
+        session.commit()
+        scan_id = scan.id
+
+    def pause_after_first_item() -> None:
+        with database.session() as session:
+            scan = session.get(Scan, scan_id)
+            if scan.processed_count == 1:
+                scan.pause_requested = True
+                session.commit()
+
+    drive = TwoComicDrive(archive)
+    processor = ScanProcessor(
+        database, drive, tmp_path / "cache", between_items=pause_after_first_item
+    )
+    processor.run(scan_id)
+
+    with database.session() as session:
+        scan = session.get(Scan, scan_id)
+        assert scan.status == "paused"
+        assert scan.pause_requested is False
+        assert scan.processed_count == 1
+        assert scan.completed_at is None
+    assert drive.download_count == 1
+
+    with database.session() as session:
+        scan = session.get(Scan, scan_id)
+        scan.status = "queued"
+        session.commit()
+
+    ScanProcessor(database, drive, tmp_path / "cache").run(scan_id)
+
+    with database.session() as session:
+        scan = session.get(Scan, scan_id)
+        assert scan.status == "completed"
+        assert scan.processed_count == 2
+        assert scan.discovered_count == 2
+        assert scan.progress == 100
+        assert session.query(Candidate).count() == 2
+    assert drive.download_count == 2
+
+
 def test_scan_downloads_new_revisions_and_reuses_history(tmp_path: Path) -> None:
     archive = tmp_path / "source.cbz"
     make_cbz(archive)

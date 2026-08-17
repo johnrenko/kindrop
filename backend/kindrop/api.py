@@ -2,6 +2,7 @@ import asyncio
 import json
 import shutil
 from collections.abc import AsyncIterator, Generator
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -46,6 +47,7 @@ from .schemas import (
     SettingsUpdate,
     SetupStatus,
 )
+from .services import add_event
 
 KINDLE_PROFILES = [
     {"id": "K11", "name": "Kindle 11"},
@@ -312,6 +314,12 @@ def create_app(
         active = session.scalar(select(Scan.id).where(Scan.status.in_(["queued", "scanning"])))
         if active:
             raise HTTPException(status_code=409, detail="A scan is already in progress")
+        paused = session.scalar(select(Scan.id).where(Scan.status == "paused"))
+        if paused:
+            raise HTTPException(
+                status_code=409,
+                detail="A scan is paused. Resume or stop it before starting a new one",
+            )
         scan = Scan()
         session.add(scan)
         session.commit()
@@ -333,11 +341,52 @@ def create_app(
         scan = session.get(Scan, scan_id)
         if not scan:
             raise HTTPException(status_code=404, detail="Scan not found")
-        if scan.status not in {"queued", "scanning"}:
-            raise HTTPException(status_code=409, detail="Only an active scan can be cancelled")
+        if scan.status in {"queued", "paused"}:
+            scan.status = "cancelled"
+            scan.cancel_requested = False
+            scan.pause_requested = False
+            scan.completed_at = datetime.now(UTC)
+            add_event(session, "scan", scan.id, "scan.cancelled")
+            session.commit()
+            return {"status": "cancelled"}
+        if scan.status != "scanning":
+            raise HTTPException(
+                status_code=409, detail="Only an active or paused scan can be stopped"
+            )
         scan.cancel_requested = True
         session.commit()
         return {"status": "cancelling"}
+
+    @app.post("/api/scans/{scan_id}/pause", status_code=status.HTTP_202_ACCEPTED)
+    def pause_scan(scan_id: str, session: Session = Depends(session_dependency)) -> dict[str, str]:
+        scan = session.get(Scan, scan_id)
+        if not scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        if scan.status == "queued":
+            scan.status = "paused"
+            add_event(session, "scan", scan.id, "scan.paused")
+            session.commit()
+            return {"status": "paused"}
+        if scan.status != "scanning":
+            raise HTTPException(status_code=409, detail="Only an active scan can be paused")
+        scan.pause_requested = True
+        session.commit()
+        return {"status": "pausing"}
+
+    @app.post("/api/scans/{scan_id}/resume", status_code=status.HTTP_202_ACCEPTED)
+    def resume_scan(
+        scan_id: str, session: Session = Depends(session_dependency)
+    ) -> dict[str, str]:
+        scan = session.get(Scan, scan_id)
+        if not scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        if scan.status != "paused":
+            raise HTTPException(status_code=409, detail="Only a paused scan can be resumed")
+        scan.status = "queued"
+        scan.pause_requested = False
+        add_event(session, "scan", scan.id, "scan.resumed")
+        session.commit()
+        return {"status": "queued"}
 
     @app.get("/api/candidates", response_model=list[CandidateRead])
     def list_candidates(

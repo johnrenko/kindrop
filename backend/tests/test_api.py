@@ -341,3 +341,64 @@ def test_clear_history_refuses_while_a_conversion_is_running(tmp_path) -> None:
     )
     with database.session() as session:
         assert session.scalars(select(Job)).one().status == "converting"
+
+
+def test_queued_scan_pauses_resumes_and_stops_immediately(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    client = TestClient(app)
+    with database.session() as session:
+        session.add(AppSettings(id=1, source_folder_id="root-folder"))
+        session.commit()
+
+    scan_id = client.post("/api/scans").json()["id"]
+
+    paused = client.post(f"/api/scans/{scan_id}/pause")
+    assert paused.status_code == 202
+    assert paused.json()["status"] == "paused"
+    with database.session() as session:
+        assert session.get(Scan, scan_id).status == "paused"
+
+    blocked = client.post("/api/scans")
+    assert blocked.status_code == 409
+    assert "paused" in blocked.json()["detail"]
+
+    resumed = client.post(f"/api/scans/{scan_id}/resume")
+    assert resumed.status_code == 202
+    assert resumed.json()["status"] == "queued"
+
+    client.post(f"/api/scans/{scan_id}/pause")
+    stopped = client.post(f"/api/scans/{scan_id}/cancel")
+    assert stopped.status_code == 202
+    assert stopped.json()["status"] == "cancelled"
+    with database.session() as session:
+        scan = session.get(Scan, scan_id)
+        assert scan.status == "cancelled"
+        assert scan.completed_at is not None
+
+    assert client.post(f"/api/scans/{scan_id}/resume").status_code == 409
+    assert client.post(f"/api/scans/{scan_id}/pause").status_code == 409
+    assert client.post("/api/scans").status_code == 202
+
+
+def test_running_scan_receives_pause_and_cancel_requests(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    client = TestClient(app)
+    with database.session() as session:
+        scan = Scan(status="scanning")
+        session.add(scan)
+        session.commit()
+        scan_id = scan.id
+
+    paused = client.post(f"/api/scans/{scan_id}/pause")
+    assert paused.status_code == 202
+    assert paused.json()["status"] == "pausing"
+    with database.session() as session:
+        assert session.get(Scan, scan_id).pause_requested is True
+
+    stopped = client.post(f"/api/scans/{scan_id}/cancel")
+    assert stopped.status_code == 202
+    assert stopped.json()["status"] == "cancelling"
+    with database.session() as session:
+        assert session.get(Scan, scan_id).cancel_requested is True
