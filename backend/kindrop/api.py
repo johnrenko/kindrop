@@ -26,6 +26,7 @@ from .models import (
     Batch,
     Candidate,
     Delivery,
+    DeliveryAttempt,
     Event,
     Job,
     Scan,
@@ -531,6 +532,47 @@ def create_app(
         ):
             candidate.cache_path = None
             candidate.cache_expires_at = None
+        session.commit()
+        return Response(status_code=204)
+
+    @app.delete("/api/history", status_code=status.HTTP_204_NO_CONTENT)
+    def clear_history(session: Session = Depends(session_dependency)) -> Response:
+        active_scan = session.scalar(
+            select(Scan.id).where(Scan.status.in_(["queued", "scanning"]))
+        )
+        active_job = session.scalar(
+            select(Job.id).where(Job.status.not_in(["sent", "failed", "cancelled"]))
+        )
+        if active_scan or active_job:
+            raise HTTPException(
+                status_code=409,
+                detail="History can only be cleared while no scan or conversion is running",
+            )
+        for attempt in session.scalars(select(DeliveryAttempt)):
+            session.delete(attempt)
+        for delivery in session.scalars(select(Delivery)):
+            session.delete(delivery)
+        for artifact in session.scalars(select(Artifact)):
+            Path(artifact.path).unlink(missing_ok=True)
+            session.delete(artifact)
+        jobs = session.scalars(
+            select(Job).options(selectinload(Job.candidate).selectinload(Candidate.revision))
+        ).all()
+        for job in jobs:
+            candidate = job.candidate
+            session.delete(job)
+            if candidate.status == "sent":
+                session.delete(candidate)
+            else:
+                candidate.status = "ready"
+                candidate.error = None
+                candidate.revision.status = "candidate"
+        for batch in session.scalars(select(Batch)):
+            session.delete(batch)
+        for candidate in session.scalars(select(Candidate).where(Candidate.scan_id.is_not(None))):
+            candidate.scan_id = None
+        for scan in session.scalars(select(Scan)):
+            session.delete(scan)
         session.commit()
         return Response(status_code=204)
 

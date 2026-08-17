@@ -188,6 +188,7 @@
   .settings-sections { border-top: 1px solid var(--ink); }
   .settings-section { display: grid; grid-template-columns: minmax(180px, .45fr) minmax(0, 1fr); gap: 3rem; padding: 2.5rem 0; border-bottom: 1px solid var(--line); }
   .settings-section__intro p { color: var(--muted); line-height: 1.55; }
+  .housekeeping-actions { display: flex; flex-wrap: wrap; gap: .6rem; }
   .credential-panel, .settings-form { max-width: 680px; }
   .connection-line { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 1rem 0; }
   .file-drop { display: grid; place-items: center; min-height: 110px; border: 1px dashed var(--line); background: oklch(99% 0.006 80 / 55%); text-align: center; cursor: pointer; }

@@ -70,6 +70,7 @@ export const api = {
       `/api/drive/folders?parent_id=${encodeURIComponent(parentId)}`,
     ),
   purgeCache: () => request<void>("/api/cache", { method: "DELETE" }),
+  clearHistory: () => request<void>("/api/history", { method: "DELETE" }),
 };
 
 export function formatBytes(bytes: number): string {
