@@ -61,8 +61,24 @@ class ScanRead(BaseModel):
 
 
 class CandidateUpdate(BaseModel):
+    """Omitted fields are left unchanged; an empty string clears the stored value."""
+
     title_override: str | None = Field(default=None, max_length=500)
     status: str | None = Field(default=None, pattern="^(ready|ignored)$")
+    series: str | None = Field(default=None, max_length=500)
+    number: str | None = Field(default=None, max_length=50)
+    author: str | None = Field(default=None, max_length=500)
+    cover_url: str | None = Field(default=None, max_length=2000)
+
+
+class MangaMatchRead(BaseModel):
+    anilist_id: int
+    title: str
+    native_title: str | None
+    author: str | None
+    cover_url: str | None
+    format: str | None
+    year: int | None
 
 
 class CandidateRead(BaseModel):

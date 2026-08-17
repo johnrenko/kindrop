@@ -9,8 +9,10 @@ from typing import Protocol
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from .anilist import AniListError, download_cover
 from .database import Database
 from .domain import ConversionPreset, revision_fingerprint
+from .epub import EpubMetadataError, apply_epub_metadata
 from .metadata import ArchiveMetadataError, clean_title, read_comic_metadata
 from .models import (
     AppSettings,
@@ -278,6 +280,7 @@ class JobProcessor:
                 source_path = Path(job.candidate.cache_path) if job.candidate.cache_path else None
                 revision = job.candidate.revision
                 title = job.title
+                comic_metadata = dict(job.candidate.comic_metadata or {})
                 preset = ConversionPreset.model_validate(job.preset)
 
             if source_path is None or not source_path.exists():
@@ -301,6 +304,10 @@ class JobProcessor:
             for path in artifact_paths:
                 if path.suffix.lower() != ".epub" or not path.is_file():
                     raise RuntimeError("KCC produced an unsupported artifact")
+
+            self._apply_metadata(job_id, artifact_paths, title, comic_metadata)
+
+            for path in artifact_paths:
                 if path.stat().st_size > MAX_EPUB_BYTES:
                     raise RuntimeError("KCC produced an EPUB larger than the 20 MB safety limit")
 
@@ -359,6 +366,39 @@ class JobProcessor:
             self._update_batch(job_id)
         except Exception as error:
             self._fail(job_id, str(error))
+
+    def _apply_metadata(
+        self, job_id: str, artifact_paths: list[Path], title: str, metadata: dict
+    ) -> None:
+        """Stamp library metadata and the chosen cover; a failure never blocks the send."""
+        cover: bytes | None = None
+        if metadata.get("cover_url"):
+            try:
+                cover = download_cover(metadata["cover_url"])
+            except AniListError as error:
+                self._metadata_warning(job_id, str(error))
+        for index, path in enumerate(artifact_paths, start=1):
+            part_title = (
+                title
+                if len(artifact_paths) == 1
+                else f"{title} — Part {index}/{len(artifact_paths)}"
+            )
+            try:
+                apply_epub_metadata(
+                    path,
+                    title=part_title,
+                    author=metadata.get("author"),
+                    series=metadata.get("series"),
+                    number=metadata.get("number"),
+                    cover=cover,
+                )
+            except EpubMetadataError as error:
+                self._metadata_warning(job_id, str(error))
+
+    def _metadata_warning(self, job_id: str, message: str) -> None:
+        with self.database.session() as session:
+            add_event(session, "job", job_id, "job.metadata_warning", message=message)
+            session.commit()
 
     def _send_artifact(
         self, job_id: str, part_number: int, recipient: str, subject: str, path: Path
