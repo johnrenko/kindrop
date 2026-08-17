@@ -10,10 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from .anilist import AniListError, download_cover
+from .archives import build_volume_archive
 from .database import Database
 from .domain import ConversionPreset, revision_fingerprint
 from .epub import EpubMetadataError, apply_epub_metadata
-from .metadata import ArchiveMetadataError, clean_title, read_comic_metadata
+from .metadata import ArchiveMetadataError, clean_title, read_comic_metadata, volume_number
 from .models import (
     AppSettings,
     Artifact,
@@ -295,9 +296,15 @@ class JobProcessor:
                 revision = job.candidate.revision
                 title = job.title
                 comic_metadata = dict(job.candidate.comic_metadata or {})
+                merged_ids = list(job.merged_candidate_ids or [])
                 preset = ConversionPreset.model_validate(job.preset)
 
-            if source_path is None or not source_path.exists():
+            if merged_ids:
+                volume = volume_number(revision.name)
+                if volume is not None:
+                    comic_metadata["number"] = f"Tome {volume:02d}"
+                source_path = self._prepare_merged_source(job_id, merged_ids)
+            elif source_path is None or not source_path.exists():
                 source_directory = self.cache_root / "sources" / job_id
                 source_directory.mkdir(parents=True, exist_ok=True)
                 source_path = source_directory / _safe_filename(
@@ -369,17 +376,57 @@ class JobProcessor:
                 job.status = "sent"
                 job.progress = 100
                 job.completed_at = datetime.now(UTC)
-                job.candidate.status = "sent"
-                job.candidate.cache_path = None
-                job.candidate.cache_expires_at = None
-                job.candidate.revision.status = "sent"
+                member_ids = list(job.merged_candidate_ids or [job.candidate_id])
+                members = session.scalars(
+                    select(Candidate)
+                    .options(selectinload(Candidate.revision))
+                    .where(Candidate.id.in_(member_ids))
+                ).all()
+                for member in members:
+                    if member.cache_path:
+                        Path(member.cache_path).unlink(missing_ok=True)
+                    member.status = "sent"
+                    member.cache_path = None
+                    member.cache_expires_at = None
+                    member.revision.status = "sent"
                 add_event(session, "job", job.id, "job.sent")
                 session.commit()
             source_path.unlink(missing_ok=True)
+            shutil.rmtree(self.cache_root / "sources" / job_id, ignore_errors=True)
             shutil.rmtree(output_directory, ignore_errors=True)
             self._update_batch(job_id)
         except Exception as error:
             self._fail(job_id, str(error))
+
+    def _prepare_merged_source(self, job_id: str, member_ids: list[str]) -> Path:
+        """Download every member chapter and merge them into one CBZ source."""
+        with self.database.session() as session:
+            members = {
+                candidate.id: (
+                    candidate.cache_path,
+                    candidate.revision.drive_file_id,
+                    candidate.revision.name,
+                )
+                for candidate in session.scalars(
+                    select(Candidate)
+                    .options(selectinload(Candidate.revision))
+                    .where(Candidate.id.in_(member_ids))
+                )
+            }
+        missing = [member_id for member_id in member_ids if member_id not in members]
+        if missing:
+            raise ValueError("A merged chapter no longer exists; recreate the batch")
+        source_directory = self.cache_root / "sources" / job_id
+        source_directory.mkdir(parents=True, exist_ok=True)
+        member_paths: list[Path] = []
+        for member_id in member_ids:
+            cache_path, drive_file_id, name = members[member_id]
+            path = Path(cache_path) if cache_path else None
+            if path is None or not path.exists():
+                path = source_directory / _safe_filename(drive_file_id, name)
+                self.drive.download(drive_file_id, path)
+            member_paths.append(path)
+        return build_volume_archive(member_paths, source_directory)
 
     def _apply_metadata(
         self, job_id: str, artifact_paths: list[Path], title: str, metadata: dict

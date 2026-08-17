@@ -402,3 +402,122 @@ def test_running_scan_receives_pause_and_cancel_requests(tmp_path) -> None:
     assert stopped.json()["status"] == "cancelling"
     with database.session() as session:
         assert session.get(Scan, scan_id).cancel_requested is True
+
+
+def _seed_ready(session, name: str, series: str | None = None) -> str:
+    revision = Revision(
+        drive_file_id=f"drive-{name}",
+        fingerprint=f"fp-{name}",
+        name=name,
+        path=f"Manga/{name}",
+        size=1,
+        status="candidate",
+    )
+    session.add(revision)
+    session.flush()
+    candidate = Candidate(
+        revision_id=revision.id,
+        status="ready",
+        resolved_title=name,
+        comic_metadata={"series": series} if series else {},
+    )
+    session.add(candidate)
+    session.flush()
+    return candidate.id
+
+
+def test_merged_batch_groups_selected_candidates_by_volume(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        session.add(AppSettings(id=1, kindle_email="reader@kindle.com"))
+        later = _seed_ready(session, "009 - Volume 02.cbr", "Naruto")
+        lead = _seed_ready(session, "008 - Volume 02.cbr", "Naruto")
+        lonely = _seed_ready(session, "015 - Volume 03.cbr", "Naruto")
+        oneshot = _seed_ready(session, "oneshot.cbz")
+        session.commit()
+
+    response = TestClient(app).post(
+        "/api/batches",
+        json={
+            "candidate_ids": [later, lead, lonely, oneshot],
+            "preset": PRESET,
+            "merge_by_volume": True,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["job_count"] == 3
+    with database.session() as session:
+        jobs = {job.title: job for job in session.scalars(select(Job))}
+        assert sorted(jobs) == ["Naruto, Tome 02", "Naruto, Tome 03", "oneshot.cbz"]
+        volume_two = jobs["Naruto, Tome 02"]
+        assert volume_two.candidate_id == lead
+        assert volume_two.merged_candidate_ids == [lead, later]
+        assert jobs["Naruto, Tome 03"].merged_candidate_ids == [lonely]
+        assert jobs["oneshot.cbz"].merged_candidate_ids is None
+        statuses = {candidate.status for candidate in session.scalars(select(Candidate))}
+        assert statuses == {"queued"}
+
+
+def test_retry_requeues_every_member_of_a_merged_job(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        lead = _seed_ready(session, "008 - Volume 02.cbr", "Naruto")
+        later = _seed_ready(session, "009 - Volume 02.cbr", "Naruto")
+        batch = Batch(preset=PRESET, status="completed_with_errors")
+        session.add(batch)
+        session.flush()
+        job = Job(
+            batch_id=batch.id,
+            candidate_id=lead,
+            status="failed",
+            preset=PRESET,
+            title="Naruto, Tome 02",
+            merged_candidate_ids=[lead, later],
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    response = TestClient(app).post(f"/api/jobs/{job_id}/retry")
+
+    assert response.status_code == 201
+    with database.session() as session:
+        replacement = session.scalars(select(Job).where(Job.id != job_id)).one()
+        assert replacement.merged_candidate_ids == [lead, later]
+        statuses = {candidate.status for candidate in session.scalars(select(Candidate))}
+        assert statuses == {"queued"}
+
+
+def test_clear_history_handles_every_member_of_a_merged_job(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        lead = _seed_ready(session, "008 - Volume 02.cbr", "Naruto")
+        later = _seed_ready(session, "009 - Volume 02.cbr", "Naruto")
+        for candidate in session.scalars(select(Candidate)):
+            candidate.status = "sent"
+            candidate.revision.status = "sent"
+        batch = Batch(preset=PRESET, status="completed")
+        session.add(batch)
+        session.flush()
+        session.add(
+            Job(
+                batch_id=batch.id,
+                candidate_id=lead,
+                status="sent",
+                preset=PRESET,
+                title="Naruto, Tome 02",
+                merged_candidate_ids=[lead, later],
+            )
+        )
+        session.commit()
+
+    response = TestClient(app).delete("/api/history")
+
+    assert response.status_code == 204
+    with database.session() as session:
+        assert session.scalars(select(Candidate)).first() is None
+        assert {revision.status for revision in session.scalars(select(Revision))} == {"sent"}

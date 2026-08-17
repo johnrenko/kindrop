@@ -20,7 +20,7 @@ from .crypto import SecretStore
 from .database import Database
 from .domain import ConversionPreset
 from .google import GoogleDriveGateway, GoogleGmailGateway, GoogleServiceFactory
-from .metadata import ArchiveMetadataError, format_kindle_title
+from .metadata import ArchiveMetadataError, format_kindle_title, volume_number
 from .models import (
     AppSettings,
     Artifact,
@@ -64,6 +64,7 @@ KINDLE_PROFILES = [
 class BatchCreate(BaseModel):
     candidate_ids: list[str] = Field(min_length=1)
     preset: ConversionPreset
+    merge_by_volume: bool = False
 
 
 class BatchResponse(BaseModel):
@@ -123,6 +124,7 @@ def _job_read(job: Job) -> JobRead:
         batch_id=job.batch_id,
         status=job.status,
         title=job.title,
+        merged_count=len(job.merged_candidate_ids) if job.merged_candidate_ids else None,
         progress=job.progress,
         error=job.error,
         created_at=job.created_at,
@@ -475,7 +477,9 @@ def create_app(
     @app.post("/api/batches", response_model=BatchResponse, status_code=status.HTTP_201_CREATED)
     def create_batch(payload: BatchCreate, session: Session = Depends(session_dependency)):
         candidates = session.scalars(
-            select(Candidate).where(Candidate.id.in_(payload.candidate_ids))
+            select(Candidate)
+            .options(selectinload(Candidate.revision))
+            .where(Candidate.id.in_(payload.candidate_ids))
         ).all()
         if len(candidates) != len(set(payload.candidate_ids)) or any(
             candidate.status != "ready" for candidate in candidates
@@ -492,7 +496,33 @@ def create_app(
         batch = Batch(preset=preset)
         session.add(batch)
         session.flush()
+        volumes: dict[int, list[Candidate]] = {}
+        singles: list[Candidate] = []
         for candidate in candidates:
+            volume = volume_number(candidate.revision.name) if payload.merge_by_volume else None
+            if volume is None:
+                singles.append(candidate)
+            else:
+                volumes.setdefault(volume, []).append(candidate)
+        job_count = 0
+        for volume, members in sorted(volumes.items()):
+            members.sort(key=lambda member: member.revision.name)
+            lead = members[0]
+            series = (lead.comic_metadata or {}).get("series")
+            title = f"{series}, Tome {volume:02d}" if series else f"Volume {volume:02d}"
+            session.add(
+                Job(
+                    batch_id=batch.id,
+                    candidate_id=lead.id,
+                    preset=preset,
+                    title=title,
+                    merged_candidate_ids=[member.id for member in members],
+                )
+            )
+            for member in members:
+                member.status = "queued"
+            job_count += 1
+        for candidate in singles:
             session.add(
                 Job(
                     batch_id=batch.id,
@@ -502,11 +532,12 @@ def create_app(
                 )
             )
             candidate.status = "queued"
+            job_count += 1
         session.commit()
         return BatchResponse(
             id=batch.id,
             status=batch.status,
-            job_count=len(candidates),
+            job_count=job_count,
             preset=payload.preset,
         )
 
@@ -526,12 +557,15 @@ def create_app(
         batch = Batch(preset=source_job.preset)
         session.add(batch)
         session.flush()
-        source_job.candidate.status = "queued"
+        member_ids = source_job.merged_candidate_ids or [source_job.candidate_id]
+        for member in session.scalars(select(Candidate).where(Candidate.id.in_(member_ids))):
+            member.status = "queued"
         replacement = Job(
             batch_id=batch.id,
             candidate_id=source_job.candidate_id,
             preset=source_job.preset,
             title=source_job.title,
+            merged_candidate_ids=source_job.merged_candidate_ids,
         )
         session.add(replacement)
         session.commit()
@@ -608,14 +642,26 @@ def create_app(
             select(Job).options(selectinload(Job.candidate).selectinload(Candidate.revision))
         ).all()
         for job in jobs:
-            candidate = job.candidate
+            members = [job.candidate]
+            extra_ids = [
+                member_id
+                for member_id in job.merged_candidate_ids or []
+                if member_id != job.candidate_id
+            ]
+            if extra_ids:
+                members += session.scalars(
+                    select(Candidate)
+                    .options(selectinload(Candidate.revision))
+                    .where(Candidate.id.in_(extra_ids))
+                ).all()
             session.delete(job)
-            if candidate.status == "sent":
-                session.delete(candidate)
-            else:
-                candidate.status = "ready"
-                candidate.error = None
-                candidate.revision.status = "candidate"
+            for candidate in members:
+                if candidate.status == "sent":
+                    session.delete(candidate)
+                else:
+                    candidate.status = "ready"
+                    candidate.error = None
+                    candidate.revision.status = "candidate"
         for batch in session.scalars(select(Batch)):
             session.delete(batch)
         for candidate in session.scalars(select(Candidate).where(Candidate.scan_id.is_not(None))):

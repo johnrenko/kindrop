@@ -10,6 +10,7 @@ MAX_COMICINFO_BYTES = 1_048_576
 _BRACKETED_TAGS = re.compile(r"\[[^\]]*\]|\{[^}]*\}|\([^)]*\)")
 _VOLUME_MARKER = re.compile(r"\b(?:v(?:ol(?:ume)?)?|t(?:ome)?)[.\s]*0*(\d{1,4})\b", re.IGNORECASE)
 _CHAPTER_MARKER = re.compile(r"\b(?:c(?:h(?:ap(?:ter)?)?)?)[.\s]*0*(\d{1,4})\b", re.IGNORECASE)
+_VOLUME_IN_NAME = re.compile(r"\bvolume[.\s]*0*(\d{1,4})\b", re.IGNORECASE)
 
 
 def _volume_label(match: re.Match[str]) -> str:
@@ -44,6 +45,13 @@ def format_kindle_title(series: str | None, number: str | None, fallback: str) -
     if number.isdigit():
         return f"{series}, Tome {int(number)}"
     return f"{series}, {number}"
+
+
+def volume_number(filename: str) -> int | None:
+    """Extract the volume number from a release filename, or None."""
+    stem = Path(filename).stem
+    match = _VOLUME_IN_NAME.search(stem) or _VOLUME_MARKER.search(stem)
+    return int(match.group(1)) if match else None
 
 
 class ArchiveMetadataError(ValueError):

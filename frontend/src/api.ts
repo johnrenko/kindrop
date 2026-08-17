@@ -51,10 +51,14 @@ export const api = {
   candidatePreviewUrl: (id: string) => `/api/candidates/${encodeURIComponent(id)}/preview`,
   searchMetadata: (query: string) =>
     request<MangaMatch[]>(`/api/metadata/search?query=${encodeURIComponent(query)}`),
-  createBatch: (candidateIds: string[], preset: ConversionPreset) =>
+  createBatch: (candidateIds: string[], preset: ConversionPreset, mergeByVolume = false) =>
     request<{ id: string }>("/api/batches", {
       method: "POST",
-      body: JSON.stringify({ candidate_ids: candidateIds, preset }),
+      body: JSON.stringify({
+        candidate_ids: candidateIds,
+        preset,
+        merge_by_volume: mergeByVolume,
+      }),
     }),
   jobs: () => request<Job[]>("/api/jobs"),
   retryJob: (id: string) => request(`/api/jobs/${id}/retry`, { method: "POST" }),

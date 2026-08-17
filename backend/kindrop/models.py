@@ -119,6 +119,7 @@ class Job(Base):
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
     preset: Mapped[dict[str, Any]] = mapped_column(JSON)
     title: Mapped[str] = mapped_column(String(500))
+    merged_candidate_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
