@@ -170,11 +170,13 @@
   .candidate__meta dd { margin: .25rem 0 0; font-size: .82rem; overflow-wrap: anywhere; }
   .icon-action { width: 44px; height: 44px; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
   .icon-action:hover { color: var(--red); }
-  .batch-dock { position: sticky; bottom: 1rem; z-index: 5; margin-top: 2rem; padding: 1rem 1.2rem; display: grid; grid-template-columns: minmax(180px, 1fr) auto auto auto; gap: 1rem; align-items: end; background: var(--ink); color: var(--paper); box-shadow: var(--shadow); }
+  .batch-dock { position: sticky; bottom: 1rem; z-index: 5; margin-top: 2rem; padding: 1rem 1.2rem; display: grid; grid-template-columns: minmax(180px, 1fr) auto auto auto auto; gap: 1rem; align-items: end; background: var(--ink); color: var(--paper); box-shadow: var(--shadow); }
   .batch-dock strong { display: block; font-family: var(--display); }
   .batch-dock label { display: grid; gap: .3rem; color: var(--paper-deep); font-size: .65rem; text-transform: uppercase; letter-spacing: .08em; }
   .batch-dock select { min-width: 125px; padding: .45rem; }
   .batch-dock .eyebrow { margin-bottom: .35rem; color: var(--paper-deep); }
+  .batch-dock .merge-toggle span { display: flex; gap: .45rem; align-items: center; color: var(--paper); font-size: .78rem; text-transform: none; letter-spacing: 0; }
+  .batch-dock .merge-toggle small { max-width: 210px; color: var(--paper-deep); text-transform: none; letter-spacing: 0; line-height: 1.35; }
   .job-ledger { border-top: 1px solid var(--ink); }
   .job-entry { display: grid; grid-template-columns: 3.2rem minmax(0, 1fr); gap: 1.4rem; padding: 2rem 0; border-bottom: 1px solid var(--line); }
   .job-entry__index { color: var(--accent); font: italic 1.45rem/1 var(--display); }

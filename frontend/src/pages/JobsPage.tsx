@@ -31,7 +31,7 @@ export function JobsPage() {
               <div className="job-entry__index">{String(index + 1).padStart(3, "0")}</div>
               <div className="job-entry__main">
                 <div className="job-entry__heading">
-                  <div><h2>{job.title}</h2><p>{new Date(job.created_at).toLocaleString()}</p></div>
+                  <div><h2>{job.title}</h2><p>{new Date(job.created_at).toLocaleString()}{job.merged_count && job.merged_count > 1 ? ` · ${job.merged_count} chapters` : ""}</p></div>
                   <StatusBadge status={job.status} />
                 </div>
                 {!["sent", "failed", "cancelled"].includes(job.status) && <Progress value={job.progress} label={job.status} />}

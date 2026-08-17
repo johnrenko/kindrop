@@ -16,6 +16,7 @@ export function ReviewPage() {
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [preset, setPreset] = useState<ConversionPreset | null>(null);
+  const [mergeByVolume, setMergeByVolume] = useState(false);
   useEffect(() => {
     if (settings.data && !preset) setPreset(settings.data.preset);
   }, [preset, settings.data]);
@@ -38,7 +39,7 @@ export function ReviewPage() {
     onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.candidates }),
   });
   const launch = useMutation({
-    mutationFn: () => api.createBatch([...selected], preset!),
+    mutationFn: () => api.createBatch([...selected], preset!, mergeByVolume),
     onSuccess: async () => {
       setSelected(new Set());
       await Promise.all([
@@ -189,14 +190,37 @@ export function ReviewPage() {
               <option value="both">Split + rotate</option><option value="split">Split</option><option value="rotate">Rotate</option>
             </select>
           </label>
+          <label className="merge-toggle">
+            <span>
+              <input
+                type="checkbox"
+                checked={mergeByVolume}
+                onChange={(event) => setMergeByVolume(event.target.checked)}
+              />
+              Merge chapters by volume
+            </span>
+            <small>Chapters sharing “Volume NN” in their filename become one book.</small>
+          </label>
           <button className="button button--primary" disabled={!selected.size || launch.isPending} onClick={() => launch.mutate()}>
-            <Send size={17} /> {launch.isPending ? "Creating batch…" : `Convert & send ${selected.size || ""}`} <ChevronRight size={16} />
+            <Send size={17} /> {launch.isPending ? "Creating batch…" : `Convert & send ${mergeByVolume ? bookCount(ready, selected) : selected.size || ""}`} <ChevronRight size={16} />
           </button>
           {launch.error && <p className="form-error">{launch.error.message}</p>}
         </aside>
       )}
     </div>
   );
+}
+
+function bookCount(candidates: Candidate[], selected: Set<string>): number | "" {
+  const volumes = new Set<string>();
+  let singles = 0;
+  for (const candidate of candidates) {
+    if (!selected.has(candidate.id)) continue;
+    const match = candidate.name.match(/volume[.\s]*0*(\d{1,4})/i);
+    if (match) volumes.add(match[1]);
+    else singles += 1;
+  }
+  return volumes.size + singles || "";
 }
 
 function CandidateDetails({

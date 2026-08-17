@@ -275,3 +275,93 @@ def test_job_converts_sends_each_part_and_purges_temporary_files(tmp_path: Path)
     assert gmail.sent[0][2] == "Volume Seven - Part 1 of 2.epub"
     assert gmail.sent[1][2] == "Volume Seven - Part 2 of 2.epub"
     assert not archive.exists()
+
+
+def test_merged_job_builds_one_volume_and_marks_every_chapter_sent(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    gmail = FakeGmail()
+    chapters: list[Path] = []
+    for prefix in ("008", "009"):
+        archive = tmp_path / f"{prefix} - Volume 02.cbz"
+        with ZipFile(archive, "w") as chapter:
+            chapter.writestr(f"{prefix}-01.jpg", b"page")
+        chapters.append(archive)
+
+    class CapturingKcc(FakeKcc):
+        def __init__(self) -> None:
+            self.sources: list[tuple[str, list[str]]] = []
+
+        def run(
+            self, source: Path, output_directory: Path, preset: ConversionPreset, title: str
+        ) -> list[Path]:
+            with ZipFile(source) as merged:
+                self.sources.append((source.name, merged.namelist()))
+            return super().run(source, output_directory, preset, title)
+
+    with database.session() as session:
+        session.add(
+            AppSettings(
+                id=1,
+                kindle_email="reader_123@kindle.com",
+                preset=ConversionPreset().model_dump(mode="json"),
+            )
+        )
+        candidate_ids: list[str] = []
+        for archive in chapters:
+            revision = Revision(
+                drive_file_id=f"drive-{archive.stem}",
+                fingerprint=f"fp-{archive.stem}",
+                name=archive.name,
+                path=f"Manga/{archive.name}",
+                size=archive.stat().st_size,
+                status="candidate",
+            )
+            session.add(revision)
+            session.flush()
+            candidate = Candidate(
+                revision_id=revision.id,
+                status="queued",
+                resolved_title=archive.stem,
+                cache_path=str(archive),
+            )
+            session.add(candidate)
+            session.flush()
+            candidate_ids.append(candidate.id)
+        batch = Batch(preset=ConversionPreset().model_dump(mode="json"))
+        session.add(batch)
+        session.flush()
+        job = Job(
+            batch_id=batch.id,
+            candidate_id=candidate_ids[0],
+            preset=batch.preset,
+            title="Naruto, Tome 02",
+            merged_candidate_ids=candidate_ids,
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    kcc = CapturingKcc()
+    JobProcessor(
+        database=database,
+        drive=FakeDrive(chapters[0]),
+        kcc=kcc,
+        gmail=gmail,
+        cache_root=tmp_path / "work",
+        wait_between_deliveries=lambda: None,
+    ).run(job_id)
+
+    assert kcc.sources == [("volume.cbz", ["001/008-01.jpg", "002/009-01.jpg"])]
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        assert job.status == "sent"
+        for candidate in session.query(Candidate).all():
+            assert candidate.status == "sent"
+            assert candidate.cache_path is None
+            assert candidate.revision.status == "sent"
+    assert [entry[1] for entry in gmail.sent] == [
+        "Naruto, Tome 02 — Part 1/2",
+        "Naruto, Tome 02 — Part 2/2",
+    ]
+    assert not (tmp_path / "work" / "sources" / job_id).exists()
+    assert all(not archive.exists() for archive in chapters)

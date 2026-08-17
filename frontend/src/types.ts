@@ -76,6 +76,7 @@ export interface Job {
   batch_id: string;
   status: string;
   title: string;
+  merged_count: number | null;
   progress: number;
   error: string | null;
   created_at: string;
