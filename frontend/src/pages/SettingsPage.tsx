@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, FileKey, Folder, LogOut, PlugZap, Save, Trash2 } from "lucide-react";
+import { ChevronRight, FileKey, Folder, History, LogOut, PlugZap, Save, Trash2 } from "lucide-react";
 
 import { api } from "../api";
 import { StatusBadge } from "../components/StatusBadge";
@@ -40,6 +40,16 @@ export function SettingsPage() {
   });
   const disconnect = useMutation({ mutationFn: api.disconnectGoogle, onSuccess: refreshSetup });
   const purge = useMutation({ mutationFn: api.purgeCache });
+  const clearHistory = useMutation({
+    mutationFn: api.clearHistory,
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: queryKeys.jobs }),
+        client.invalidateQueries({ queryKey: queryKeys.scans }),
+        client.invalidateQueries({ queryKey: queryKeys.candidates }),
+      ]);
+    },
+  });
 
   const chooseFolder = (folder: Crumb) => {
     if (!draft) return;
@@ -181,8 +191,22 @@ export function SettingsPage() {
 
         <section className="settings-section settings-section--quiet">
           <div className="settings-section__number">04</div>
-          <div className="settings-section__intro"><span className="eyebrow">Housekeeping</span><h2>Clear temporary files</h2><p>History remains. Cached source archives and unfinished EPUBs are removed.</p></div>
-          <div className="settings-section__body"><button className="button button--danger" onClick={() => purge.mutate()} disabled={purge.isPending}><Trash2 size={16} /> {purge.isPending ? "Clearing cache…" : "Clear temporary cache"}</button></div>
+          <div className="settings-section__intro"><span className="eyebrow">Housekeeping</span><h2>Tidy the workshop</h2><p>Clearing the cache removes source archives and unfinished EPUBs; history remains. Clearing history removes jobs, batches and deliveries; already-sent files are not proposed again.</p></div>
+          <div className="settings-section__body">
+            <div className="housekeeping-actions">
+              <button className="button button--danger" onClick={() => purge.mutate()} disabled={purge.isPending}><Trash2 size={16} /> {purge.isPending ? "Clearing cache…" : "Clear temporary cache"}</button>
+              <button
+                className="button button--danger"
+                onClick={() => {
+                  if (window.confirm("Delete every job, batch and delivery record? Already-sent files will not reappear on the next scan.")) clearHistory.mutate();
+                }}
+                disabled={clearHistory.isPending}
+              >
+                <History size={16} /> {clearHistory.isPending ? "Clearing history…" : "Clear history"}
+              </button>
+            </div>
+            {(purge.error || clearHistory.error) && <p className="form-error">{(purge.error || clearHistory.error)?.message}</p>}
+          </div>
         </section>
       </div>
     </div>

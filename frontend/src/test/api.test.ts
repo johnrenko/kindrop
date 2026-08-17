@@ -19,4 +19,17 @@ describe("API client", () => {
 
     await expect(api.startScan()).rejects.toThrow("Choose a source folder first");
   });
+
+  it("clears history with a DELETE request", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+
+    await expect(api.clearHistory()).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/history",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
 });
