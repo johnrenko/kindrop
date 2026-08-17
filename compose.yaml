@@ -1,0 +1,49 @@
+name: kindrop
+
+x-kindrop-service: &kindrop-service
+  build:
+    context: .
+  image: kindrop:local
+  init: true
+  restart: unless-stopped
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  environment:
+    KINDROP_DATABASE_URL: sqlite:////data/kindrop.db
+    KINDROP_CACHE_ROOT: /cache
+    KINDROP_SECRET_KEY_FILE: /run/secrets/kindrop.key
+    KINDROP_APP_BASE_URL: http://127.0.0.1:8787
+    KINDROP_FRONTEND_DIST: /app/frontend
+  volumes:
+    - kindrop-data:/data
+    - kindrop-cache:/cache
+    - ./secrets/kindrop.key:/run/secrets/kindrop.key:ro
+  tmpfs:
+    - /tmp:size=256m,mode=1777
+
+services:
+  web:
+    <<: *kindrop-service
+    command: ["kindrop-web", "uvicorn", "kindrop.main:app", "--host", "0.0.0.0", "--port", "8787"]
+    ports:
+      - "127.0.0.1:8787:8787"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  worker:
+    <<: *kindrop-service
+    command: ["python", "-m", "kindrop.worker"]
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  kindrop-data:
+  kindrop-cache:
