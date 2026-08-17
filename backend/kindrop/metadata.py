@@ -33,6 +33,19 @@ def clean_title(raw: str) -> str:
     return text or " ".join(raw.replace("_", " ").split()) or "Untitled"
 
 
+def format_kindle_title(series: str | None, number: str | None, fallback: str) -> str:
+    """Build the Kindle library title so volumes of one series sort together."""
+    series = " ".join(series.split()) if series else None
+    number = " ".join(number.split()) if number else None
+    if not series:
+        return fallback
+    if not number:
+        return series
+    if number.isdigit():
+        return f"{series}, Tome {int(number)}"
+    return f"{series}, {number}"
+
+
 class ArchiveMetadataError(ValueError):
     pass
 

@@ -42,7 +42,13 @@ export interface Candidate {
   status: string;
   resolved_title: string;
   title_override: string | null;
-  metadata: { title?: string; series?: string; number?: string };
+  metadata: {
+    title?: string | null;
+    series?: string | null;
+    number?: string | null;
+    author?: string | null;
+    cover_url?: string | null;
+  };
   cache_expires_at: string | null;
   error: string | null;
   drive_file_id: string;
@@ -75,6 +81,16 @@ export interface Job {
   created_at: string;
   completed_at: string | null;
   deliveries: Delivery[];
+}
+
+export interface MangaMatch {
+  anilist_id: number;
+  title: string;
+  native_title: string | null;
+  author: string | null;
+  cover_url: string | null;
+  format: string | null;
+  year: number | null;
 }
 
 export interface DriveFolder {

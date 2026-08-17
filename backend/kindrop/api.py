@@ -6,18 +6,20 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
-from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, selectinload
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from .anilist import AniListError, search_manga
 from .config import RuntimeSettings
 from .crypto import SecretStore
 from .database import Database
 from .domain import ConversionPreset
 from .google import GoogleDriveGateway, GoogleGmailGateway, GoogleServiceFactory
+from .metadata import ArchiveMetadataError, format_kindle_title
 from .models import (
     AppSettings,
     Artifact,
@@ -29,12 +31,14 @@ from .models import (
     Scan,
 )
 from .oauth import authorization_url, exchange_code, validate_client_config
+from .preview import extract_preview
 from .schemas import (
     CandidateRead,
     CandidateUpdate,
     FolderPageRead,
     GoogleClientPayload,
     JobRead,
+    MangaMatchRead,
     OAuthStart,
     ScanRead,
     SettingsRead,
@@ -222,7 +226,10 @@ def create_app(
         if not settings.oauth_state or state != settings.oauth_state:
             raise HTTPException(status_code=400, detail="The Google OAuth state did not match")
         if not settings.oauth_code_verifier:
-            raise HTTPException(status_code=400, detail="The Google OAuth session expired, restart the connection")
+            raise HTTPException(
+                status_code=400,
+                detail="The Google OAuth session expired, restart the connection",
+            )
         if not settings.encrypted_google_client:
             raise HTTPException(status_code=409, detail="Upload a Google OAuth client first")
         store = SecretStore(runtime.secret_key_file)
@@ -360,7 +367,24 @@ def create_app(
             raise HTTPException(status_code=404, detail="Candidate not found")
         if candidate.status not in {"ready", "ignored"}:
             raise HTTPException(status_code=409, detail="This Candidate can no longer be edited")
-        candidate.title_override = payload.title_override or None
+        provided = payload.model_fields_set
+        if "title_override" in provided:
+            candidate.title_override = (payload.title_override or "").strip() or None
+        metadata_fields = {"series", "number", "author", "cover_url"} & provided
+        if metadata_fields:
+            if payload.cover_url and not payload.cover_url.startswith("https://"):
+                raise HTTPException(status_code=422, detail="The cover URL must use https")
+            updated = dict(candidate.comic_metadata or {})
+            for field in metadata_fields:
+                value = (getattr(payload, field) or "").strip()
+                updated[field] = value or None
+            candidate.comic_metadata = updated
+            if {"series", "number"} & metadata_fields:
+                candidate.resolved_title = format_kindle_title(
+                    updated.get("series"),
+                    updated.get("number"),
+                    updated.get("title") or candidate.resolved_title,
+                )
         if payload.status and payload.status != candidate.status:
             candidate.status = payload.status
             candidate.revision.status = "ignored" if payload.status == "ignored" else "candidate"
@@ -370,6 +394,33 @@ def create_app(
                 candidate.cache_expires_at = None
         session.commit()
         return _candidate_read(candidate)
+
+    @app.get("/api/candidates/{candidate_id}/preview")
+    def candidate_preview(
+        candidate_id: str, session: Session = Depends(session_dependency)
+    ) -> FileResponse:
+        candidate = session.get(Candidate, candidate_id)
+        if not candidate:
+            raise HTTPException(status_code=404, detail="Candidate not found")
+        preview_path = runtime.cache_root / "previews" / f"{candidate_id}.jpg"
+        if not preview_path.is_file():
+            if not candidate.cache_path or not Path(candidate.cache_path).is_file():
+                raise HTTPException(
+                    status_code=404, detail="The cached archive for this Candidate has expired"
+                )
+            try:
+                extract_preview(Path(candidate.cache_path), preview_path)
+            except ArchiveMetadataError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+        return FileResponse(preview_path, media_type="image/jpeg")
+
+    @app.get("/api/metadata/search", response_model=list[MangaMatchRead])
+    def metadata_search(query: str = Query(min_length=1, max_length=200)) -> list[MangaMatchRead]:
+        try:
+            matches = search_manga(query)
+        except AniListError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        return [MangaMatchRead(**match.__dict__) for match in matches]
 
     @app.post("/api/batches", response_model=BatchResponse, status_code=status.HTTP_201_CREATED)
     def create_batch(payload: BatchCreate, session: Session = Depends(session_dependency)):

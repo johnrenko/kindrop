@@ -4,10 +4,20 @@ import type {
   DriveFolder,
   Job,
   KindleProfile,
+  MangaMatch,
   Scan,
   Settings,
   SetupStatus,
 } from "./types";
+
+export interface CandidateUpdate {
+  title_override?: string | null;
+  status?: string;
+  series?: string;
+  number?: string;
+  author?: string;
+  cover_url?: string;
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -31,11 +41,14 @@ export const api = {
   startScan: () => request<Scan>("/api/scans", { method: "POST" }),
   cancelScan: (id: string) => request(`/api/scans/${id}/cancel`, { method: "POST" }),
   candidates: () => request<Candidate[]>("/api/candidates"),
-  updateCandidate: (id: string, update: { title_override?: string | null; status?: string }) =>
+  updateCandidate: (id: string, update: CandidateUpdate) =>
     request<Candidate>(`/api/candidates/${id}`, {
       method: "PATCH",
       body: JSON.stringify(update),
     }),
+  candidatePreviewUrl: (id: string) => `/api/candidates/${encodeURIComponent(id)}/preview`,
+  searchMetadata: (query: string) =>
+    request<MangaMatch[]>(`/api/metadata/search?query=${encodeURIComponent(query)}`),
   createBatch: (candidateIds: string[], preset: ConversionPreset) =>
     request<{ id: string }>("/api/batches", {
       method: "POST",

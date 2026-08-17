@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronRight, Search, Send, X } from "lucide-react";
+import { BookOpen, Check, ChevronRight, Search, Send, Sparkles, X } from "lucide-react";
 
-import { api, formatBytes } from "../api";
+import { api, formatBytes, type CandidateUpdate } from "../api";
 import { EmptyState } from "../components/EmptyState";
 import { StatusBadge } from "../components/StatusBadge";
 import { queryKeys } from "../query";
-import type { ConversionPreset } from "../types";
+import type { Candidate, ConversionPreset, MangaMatch } from "../types";
 
 export function ReviewPage() {
   const client = useQueryClient();
@@ -14,6 +14,7 @@ export function ReviewPage() {
   const settings = useQuery({ queryKey: queryKeys.settings, queryFn: api.settings });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [preset, setPreset] = useState<ConversionPreset | null>(null);
   useEffect(() => {
     if (settings.data && !preset) setPreset(settings.data.preset);
@@ -113,12 +114,22 @@ export function ReviewPage() {
                   <span><Check size={15} /></span>
                 </label>
                 <span className="candidate__number">{String(index + 1).padStart(2, "0")}</span>
+                <img
+                  className="candidate__preview"
+                  src={candidate.metadata.cover_url ?? api.candidatePreviewUrl(candidate.id)}
+                  alt=""
+                  loading="lazy"
+                  onError={(event) => {
+                    event.currentTarget.style.visibility = "hidden";
+                  }}
+                />
                 <div className="candidate__body">
                   <div className="candidate__title-row">
                     <div>
                       <input
                         className="title-input"
                         aria-label={`Kindle title for ${candidate.name}`}
+                        key={candidate.title_override ?? candidate.resolved_title}
                         defaultValue={candidate.title_override ?? candidate.resolved_title}
                         onBlur={(event) => {
                           const value = event.currentTarget.value.trim();
@@ -136,8 +147,21 @@ export function ReviewPage() {
                     <div><dt>Size</dt><dd>{formatBytes(candidate.size)}</dd></div>
                     <div><dt>Series</dt><dd>{candidate.metadata.series || "—"}</dd></div>
                     <div><dt>Number</dt><dd>{candidate.metadata.number || "—"}</dd></div>
+                    <div><dt>Author</dt><dd>{candidate.metadata.author || "—"}</dd></div>
                   </dl>
+                  {expanded === candidate.id && (
+                    <CandidateDetails
+                      candidate={candidate}
+                      onUpdate={(payload) => update.mutate({ id: candidate.id, payload })}
+                    />
+                  )}
                 </div>
+                <button
+                  className="icon-action"
+                  aria-label={`Edit metadata for ${candidate.name}`}
+                  aria-expanded={expanded === candidate.id}
+                  onClick={() => setExpanded((current) => (current === candidate.id ? null : candidate.id))}
+                ><BookOpen size={18} /></button>
                 <button
                   className="icon-action"
                   aria-label={`Ignore ${candidate.name}`}
@@ -170,6 +194,106 @@ export function ReviewPage() {
           </button>
           {launch.error && <p className="form-error">{launch.error.message}</p>}
         </aside>
+      )}
+    </div>
+  );
+}
+
+function CandidateDetails({
+  candidate,
+  onUpdate,
+}: {
+  candidate: Candidate;
+  onUpdate: (payload: CandidateUpdate) => void;
+}) {
+  const meta = candidate.metadata;
+  const [lookup, setLookup] = useState(meta.series ?? candidate.resolved_title);
+  const search = useMutation({ mutationFn: (query: string) => api.searchMetadata(query) });
+
+  const applyMatch = (match: MangaMatch) => {
+    onUpdate({
+      series: match.title,
+      author: match.author ?? "",
+      cover_url: match.cover_url ?? "",
+    });
+  };
+
+  const field = (
+    label: string,
+    key: "series" | "number" | "author",
+    placeholder: string,
+  ) => (
+    <label className="metadata-field">
+      {label}
+      <input
+        key={`${key}-${meta[key] ?? ""}`}
+        defaultValue={meta[key] ?? ""}
+        placeholder={placeholder}
+        onBlur={(event) => {
+          const value = event.currentTarget.value.trim();
+          if (value !== (meta[key] ?? "")) onUpdate({ [key]: value });
+        }}
+      />
+    </label>
+  );
+
+  return (
+    <div className="metadata-panel">
+      <div className="metadata-fields">
+        {field("Series", "series", "Naruto")}
+        {field("Number", "number", "3")}
+        {field("Author", "author", "Masashi Kishimoto")}
+      </div>
+      <div className="metadata-cover">
+        <span className="eyebrow">Cover</span>
+        {meta.cover_url ? (
+          <>
+            <img src={meta.cover_url} alt={`Cover for ${meta.series ?? candidate.resolved_title}`} />
+            <button className="button" onClick={() => onUpdate({ cover_url: "" })}>
+              Use first page instead
+            </button>
+          </>
+        ) : (
+          <p>The first page of the archive is used as the cover.</p>
+        )}
+      </div>
+      <form
+        className="metadata-lookup"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (lookup.trim()) search.mutate(lookup.trim());
+        }}
+      >
+        <label className="review-search">
+          <Sparkles size={15} />
+          <input
+            type="search"
+            aria-label="Search AniList"
+            placeholder="Search AniList…"
+            value={lookup}
+            onChange={(event) => setLookup(event.target.value)}
+          />
+        </label>
+        <button className="button" type="submit" disabled={search.isPending}>
+          {search.isPending ? "Searching…" : "Search AniList"}
+        </button>
+      </form>
+      {search.error && <p className="form-error">{search.error.message}</p>}
+      {search.data && search.data.length === 0 && <p>AniList found no matching manga.</p>}
+      {search.data && search.data.length > 0 && (
+        <ul className="anilist-results">
+          {search.data.map((match) => (
+            <li key={match.anilist_id}>
+              <button type="button" onClick={() => applyMatch(match)}>
+                {match.cover_url ? <img src={match.cover_url} alt="" loading="lazy" /> : <span className="anilist-nocover" />}
+                <strong>{match.title}</strong>
+                <span>
+                  {[match.author, match.format, match.year].filter(Boolean).join(" · ")}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

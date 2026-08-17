@@ -99,3 +99,75 @@ def test_batch_creation_rejects_candidates_that_are_not_ready(tmp_path) -> None:
 
     assert response.status_code == 409
     assert response.json()["detail"] == "Every selected candidate must be ready"
+
+
+def _seed_candidate(database: Database) -> str:
+    with database.session() as session:
+        revision = Revision(
+            drive_file_id="drive-2",
+            fingerprint="drive-2:md5:def",
+            name="naruto_v03.cbz",
+            path="Manga/naruto_v03.cbz",
+            size=456,
+            status="candidate",
+        )
+        session.add(revision)
+        session.flush()
+        candidate = Candidate(
+            revision_id=revision.id,
+            status="ready",
+            resolved_title="Naruto Vol. 3",
+            title_override="My override",
+        )
+        session.add(candidate)
+        session.commit()
+        return candidate.id
+
+
+def test_candidate_metadata_edit_recomputes_the_kindle_title(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    candidate_id = _seed_candidate(database)
+
+    response = TestClient(app).patch(
+        f"/api/candidates/{candidate_id}",
+        json={
+            "series": "Naruto",
+            "number": "3",
+            "author": "Masashi Kishimoto",
+            "cover_url": "https://img.anili.st/naruto.jpg",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["resolved_title"] == "Naruto, Tome 3"
+    assert body["metadata"]["author"] == "Masashi Kishimoto"
+    assert body["metadata"]["cover_url"] == "https://img.anili.st/naruto.jpg"
+    assert body["title_override"] == "My override"
+
+
+def test_candidate_metadata_edit_rejects_plain_http_cover(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    candidate_id = _seed_candidate(database)
+
+    response = TestClient(app).patch(
+        f"/api/candidates/{candidate_id}",
+        json={"cover_url": "http://img.anili.st/naruto.jpg"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_candidate_status_edit_keeps_the_title_override(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    candidate_id = _seed_candidate(database)
+
+    response = TestClient(app).patch(
+        f"/api/candidates/{candidate_id}", json={"status": "ignored"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["title_override"] == "My override"
