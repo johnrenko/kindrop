@@ -19,6 +19,7 @@ export function ReviewPage() {
   const candidates = useQuery({ queryKey: queryKeys.candidates, queryFn: api.candidates });
   const settings = useQuery({ queryKey: queryKeys.settings, queryFn: api.settings });
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [sortOrder, setSortOrder] = useState<SortOrder>("scan");
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -63,13 +64,28 @@ export function ReviewPage() {
     },
   });
 
-  const toggle = (id: string) => {
+  const toggle = (id: string, shiftKey = false) => {
     setSelected((current) => {
       const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      const willSelect = !current.has(id);
+      if (shiftKey && selectionAnchor && selectionAnchor !== id) {
+        const ids = visible.map((candidate) => candidate.id);
+        const from = ids.indexOf(selectionAnchor);
+        const to = ids.indexOf(id);
+        if (from !== -1 && to !== -1) {
+          const [start, end] = from < to ? [from, to] : [to, from];
+          for (const rangeId of ids.slice(start, end + 1)) {
+            if (willSelect) next.add(rangeId);
+            else next.delete(rangeId);
+          }
+          return next;
+        }
+      }
+      if (willSelect) next.add(id);
+      else next.delete(id);
       return next;
     });
+    setSelectionAnchor(id);
   };
 
   return (
@@ -137,7 +153,15 @@ export function ReviewPage() {
             {visible.map((candidate, index) => (
               <li key={candidate.id} className={selected.has(candidate.id) ? "candidate is-selected" : "candidate"}>
                 <label className="candidate__check">
-                  <input type="checkbox" checked={selected.has(candidate.id)} onChange={() => toggle(candidate.id)} />
+                  <input
+                    type="checkbox"
+                    checked={selected.has(candidate.id)}
+                    onChange={() => {}}
+                    onClick={(event) => toggle(candidate.id, event.shiftKey)}
+                    onMouseDown={(event) => {
+                      if (event.shiftKey) event.preventDefault();
+                    }}
+                  />
                   <span><Check size={15} /></span>
                 </label>
                 <span className="candidate__number">{String(index + 1).padStart(2, "0")}</span>
