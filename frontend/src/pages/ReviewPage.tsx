@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpen, Check, ChevronRight, Search, Send, Sparkles, X } from "lucide-react";
+import { ArrowDownAZ, BookOpen, Check, ChevronRight, Search, Send, Sparkles, X } from "lucide-react";
 
 import { api, formatBytes, type CandidateUpdate } from "../api";
 import { EmptyState } from "../components/EmptyState";
@@ -8,12 +8,19 @@ import { StatusBadge } from "../components/StatusBadge";
 import { queryKeys } from "../query";
 import type { Candidate, ConversionPreset, MangaMatch } from "../types";
 
+type SortOrder = "scan" | "name-asc" | "name-desc";
+
+function candidateName(candidate: Candidate) {
+  return candidate.title_override ?? candidate.resolved_title;
+}
+
 export function ReviewPage() {
   const client = useQueryClient();
   const candidates = useQuery({ queryKey: queryKeys.candidates, queryFn: api.candidates });
   const settings = useQuery({ queryKey: queryKeys.settings, queryFn: api.settings });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("scan");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [preset, setPreset] = useState<ConversionPreset | null>(null);
   const [mergeByVolume, setMergeByVolume] = useState(false);
@@ -27,12 +34,19 @@ export function ReviewPage() {
   );
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return ready;
-    return ready.filter((candidate) =>
-      [candidate.title_override ?? candidate.resolved_title, candidate.name, candidate.path, candidate.metadata.series]
-        .some((field) => field?.toLowerCase().includes(needle)),
+    const filtered = !needle
+      ? ready
+      : ready.filter((candidate) =>
+          [candidate.title_override ?? candidate.resolved_title, candidate.name, candidate.path, candidate.metadata.series]
+            .some((field) => field?.toLowerCase().includes(needle)),
+        );
+    if (sortOrder === "scan") return filtered;
+    const sorted = [...filtered].sort((a, b) =>
+      candidateName(a).localeCompare(candidateName(b), undefined, { numeric: true, sensitivity: "base" }),
     );
-  }, [query, ready]);
+    if (sortOrder === "name-desc") sorted.reverse();
+    return sorted;
+  }, [query, ready, sortOrder]);
   const update = useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: { title_override?: string | null; status?: string } }) =>
       api.updateCandidate(id, payload),
@@ -99,6 +113,18 @@ export function ReviewPage() {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
               />
+            </label>
+            <label className="review-sort">
+              <ArrowDownAZ size={15} />
+              <select
+                aria-label="Sort candidates"
+                value={sortOrder}
+                onChange={(event) => setSortOrder(event.target.value as SortOrder)}
+              >
+                <option value="scan">Scan order</option>
+                <option value="name-asc">Name A–Z</option>
+                <option value="name-desc">Name Z–A</option>
+              </select>
             </label>
             <span>{selected.size} selected</span>
           </div>
