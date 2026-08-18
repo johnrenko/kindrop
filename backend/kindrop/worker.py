@@ -1,6 +1,6 @@
+import logging
 import shutil
 import time
-from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,9 +11,11 @@ from .crypto import SecretStore
 from .database import Database
 from .google import GoogleDriveGateway, GoogleGmailGateway, GoogleServiceFactory
 from .mail_monitor import AmazonMailMonitor, AmazonVerificationClient
-from .models import Candidate, Job, Scan
+from .models import Candidate, Event, Job, Scan
 from .runners import KccRunner
 from .services import JobProcessor, ScanProcessor
+
+logger = logging.getLogger(__name__)
 
 
 class DeliveryRateLimiter:
@@ -50,7 +52,7 @@ class Worker:
             kcc=KccRunner(),
             gmail=self.gmail,
             cache_root=runtime.cache_root,
-            wait_between_deliveries=self.rate_limiter.wait,
+            wait_between_deliveries=self._wait_between_deliveries,
         )
         self.mail = AmazonMailMonitor(self.database, self.gmail, AmazonVerificationClient())
         self._last_mail_check = 0.0
@@ -59,12 +61,30 @@ class Worker:
         self.drain_queued_jobs()
         self.check_mail_if_due()
 
+    def _wait_between_deliveries(self) -> None:
+        self.check_mail_if_due()
+        self.rate_limiter.wait()
+
     def check_mail_if_due(self) -> None:
         current = time.monotonic()
         if current - self._last_mail_check >= self.runtime.mail_poll_seconds:
-            with suppress(Exception):
+            try:
                 self.mail.run_once()
+            except Exception as error:
+                logger.exception("The Amazon mail monitor failed")
+                self._record_mail_error(error)
             self._last_mail_check = current
+
+    def _record_mail_error(self, error: Exception) -> None:
+        detail = f"{type(error).__name__}: {error}"
+        with self.database.session() as session:
+            last = session.scalar(
+                select(Event).where(Event.kind == "mail.error").order_by(Event.id.desc()).limit(1)
+            )
+            if last and last.payload.get("error") == detail:
+                return
+            session.add(Event(topic="mail", kind="mail.error", payload={"error": detail}))
+            session.commit()
 
     def drain_queued_jobs(self) -> None:
         while True:
@@ -75,6 +95,7 @@ class Worker:
             if not job_id:
                 return
             self.jobs.run(job_id)
+            self.check_mail_if_due()
 
     def recover_interrupted_work(self) -> None:
         with self.database.session() as session:

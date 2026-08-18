@@ -175,6 +175,32 @@ def test_processed_messages_are_not_fetched_again(tmp_path: Path) -> None:
         assert session.get(Delivery, second).status == "verified"
 
 
+def test_unknown_deliveries_are_verified_by_amazon_reply(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    with database.session() as session:
+        delivery_id = _add_delivery(session, 1, SENT_BASE)
+        delivery = session.get(Delivery, delivery_id)
+        delivery.status = "unknown"
+        delivery.error_detail = (
+            "Gmail may have accepted this message. Choose resend manually to avoid a duplicate."
+        )
+        session.commit()
+
+    verifier = FakeVerifier()
+    monitor = AmazonMailMonitor(
+        database,
+        FakeGmail([_verification_message(1, SENT_BASE + timedelta(seconds=25))]),
+        verifier,
+    )
+    monitor.run_once()
+
+    with database.session() as session:
+        delivery = session.get(Delivery, delivery_id)
+        assert delivery.status == "verified"
+        assert delivery.error_detail is None
+    assert len(verifier.calls) == 1
+
+
 def test_message_far_from_any_delivery_is_left_alone(tmp_path: Path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'test.db'}")
     with database.session() as session:

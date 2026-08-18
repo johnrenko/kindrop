@@ -74,7 +74,7 @@ class AmazonMailMonitor:
                 .options(selectinload(Delivery.artifact).selectinload(Artifact.job))
                 .where(
                     Delivery.status.in_(
-                        ["sent_unconfirmed", "verification_required", "action_required"]
+                        ["sent_unconfirmed", "verification_required", "action_required", "unknown"]
                     ),
                     Delivery.sent_at >= datetime.now(UTC) - timedelta(days=7),
                 )
@@ -119,6 +119,7 @@ class AmazonMailMonitor:
                     if self.verifier.verify(result.verification_url):
                         delivery.status = "verified"
                         delivery.verification_url = None
+                        delivery.error_detail = None
                     else:
                         delivery.status = "action_required"
                 delivery.updated_at = datetime.now(UTC)
