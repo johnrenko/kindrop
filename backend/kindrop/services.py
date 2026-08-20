@@ -283,6 +283,8 @@ class JobProcessor:
                     .options(selectinload(Job.candidate).selectinload(Candidate.revision))
                     .where(Job.id == job_id)
                 )
+                if job and job.status != "queued":
+                    return
                 settings = session.get(AppSettings, 1)
                 if not job or not settings or not settings.kindle_email:
                     raise ValueError("Configure a Kindle Destination before processing jobs")

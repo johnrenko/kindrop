@@ -491,6 +491,75 @@ def test_retry_requeues_every_member_of_a_merged_job(tmp_path) -> None:
         assert statuses == {"queued"}
 
 
+def test_cancel_queued_merged_job_restores_candidates_and_completes_batch(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        lead = _seed_ready(session, "008 - Volume 02.cbr", "Naruto")
+        later = _seed_ready(session, "009 - Volume 02.cbr", "Naruto")
+        for candidate in session.scalars(select(Candidate)):
+            candidate.status = "queued"
+        batch = Batch(preset=PRESET)
+        session.add(batch)
+        session.flush()
+        job = Job(
+            batch_id=batch.id,
+            candidate_id=lead,
+            preset=PRESET,
+            title="Naruto, Tome 02",
+            merged_candidate_ids=[lead, later],
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+        batch_id = batch.id
+
+    response = TestClient(app).post(f"/api/jobs/{job_id}/cancel")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "cancelled"}
+    with database.session() as session:
+        assert session.get(Job, job_id).status == "cancelled"
+        assert {candidate.status for candidate in session.scalars(select(Candidate))} == {"ready"}
+        batch = session.get(Batch, batch_id)
+        assert batch.status == "completed_with_errors"
+        assert batch.completed_at is not None
+
+
+def test_cancel_rejects_non_queued_job(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        candidate_id = _seed_ready(session, "volume.cbz")
+        batch = Batch(preset=PRESET)
+        session.add(batch)
+        session.flush()
+        job = Job(
+            batch_id=batch.id,
+            candidate_id=candidate_id,
+            status="sent",
+            preset=PRESET,
+            title="Volume",
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    response = TestClient(app).post(f"/api/jobs/{job_id}/cancel")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Only queued jobs can be cancelled"
+
+
+def test_cancel_rejects_unknown_job(tmp_path) -> None:
+    app = create_app(Database(f"sqlite:///{tmp_path / 'test.db'}"))
+
+    response = TestClient(app).post("/api/jobs/unknown/cancel")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Job not found"
+
+
 def test_clear_history_handles_every_member_of_a_merged_job(tmp_path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'test.db'}")
     app = create_app(database)

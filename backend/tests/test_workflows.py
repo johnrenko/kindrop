@@ -199,6 +199,58 @@ def test_scan_downloads_new_revisions_and_reuses_history(tmp_path: Path) -> None
     assert drive.download_count == 1
 
 
+def test_cancelled_job_is_not_processed(tmp_path: Path) -> None:
+    archive = tmp_path / "source.cbz"
+    make_cbz(archive)
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    with database.session() as session:
+        revision = Revision(
+            drive_file_id="drive-1",
+            fingerprint="drive-1:md5:abc",
+            name="volume.cbz",
+            path="Series/volume.cbz",
+            size=archive.stat().st_size,
+            status="candidate",
+        )
+        session.add(revision)
+        session.flush()
+        candidate = Candidate(
+            revision_id=revision.id,
+            status="ready",
+            resolved_title="Volume Seven",
+        )
+        session.add(candidate)
+        session.flush()
+        batch = Batch(preset=ConversionPreset().model_dump(mode="json"))
+        session.add(batch)
+        session.flush()
+        job = Job(
+            batch_id=batch.id,
+            candidate_id=candidate.id,
+            status="cancelled",
+            preset=batch.preset,
+            title="Volume Seven",
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    JobProcessor(
+        database=database,
+        drive=FakeDrive(archive),
+        kcc=FakeKcc(),
+        gmail=FakeGmail(),
+        cache_root=tmp_path / "jobs",
+        wait_between_deliveries=lambda: None,
+    ).run(job_id)
+
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        assert job.status == "cancelled"
+        assert job.started_at is None
+        assert job.artifacts == []
+
+
 def test_job_converts_sends_each_part_and_purges_temporary_files(tmp_path: Path) -> None:
     archive = tmp_path / "source.cbz"
     make_cbz(archive)

@@ -32,6 +32,19 @@ describe("API client", () => {
       expect.objectContaining({ method: "DELETE" }),
     );
   });
+
+  it("cancels a job with a POST request", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ status: "cancelled" }), { status: 200 }));
+
+    await expect(api.cancelJob("job-1")).resolves.toEqual({ status: "cancelled" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/jobs/job-1/cancel",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
 });
 
 describe("Batch creation", () => {

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, RotateCcw } from "lucide-react";
+import { AlertTriangle, Ban, RotateCcw } from "lucide-react";
 
 import { api } from "../api";
 import { EmptyState } from "../components/EmptyState";
@@ -21,6 +21,14 @@ export function JobsPage() {
   const retry = useMutation({
     mutationFn: api.retryJob,
     onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.jobs }),
+  });
+  const cancel = useMutation({
+    mutationFn: api.cancelJob,
+    onSuccess: () =>
+      Promise.all([
+        client.invalidateQueries({ queryKey: queryKeys.jobs }),
+        client.invalidateQueries({ queryKey: queryKeys.candidates }),
+      ]),
   });
   const resend = useMutation({
     mutationFn: api.resendDelivery,
@@ -115,6 +123,11 @@ export function JobsPage() {
                     {(["failed", "cancelled"].includes(job.status)) && (
                       <button className="button button--secondary" onClick={() => retry.mutate(job.id)} disabled={retry.isPending}>
                         <RotateCcw size={16} /> Retry as a new job
+                      </button>
+                    )}
+                    {job.status === "queued" && (
+                      <button className="button button--secondary" onClick={() => cancel.mutate(job.id)} disabled={cancel.isPending}>
+                        <Ban size={16} /> Cancel
                       </button>
                     )}
                   </div>

@@ -585,6 +585,31 @@ def create_app(
         replacement = clone_job(job, session)
         return {"id": replacement.id, "status": replacement.status}
 
+    @app.post("/api/jobs/{job_id}/cancel")
+    def cancel_job(job_id: str, session: Session = Depends(session_dependency)) -> dict[str, str]:
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status != "queued":
+            raise HTTPException(status_code=409, detail="Only queued jobs can be cancelled")
+        job.status = "cancelled"
+        job.completed_at = datetime.now(UTC)
+        add_event(session, "job", job.id, "job.cancelled")
+        member_ids = job.merged_candidate_ids or [job.candidate_id]
+        for candidate in session.scalars(select(Candidate).where(Candidate.id.in_(member_ids))):
+            candidate.status = "ready"
+        jobs = session.scalars(select(Job).where(Job.batch_id == job.batch_id)).all()
+        if all(item.status in {"sent", "failed", "cancelled"} for item in jobs):
+            batch = session.get(Batch, job.batch_id)
+            batch.status = (
+                "completed"
+                if all(item.status == "sent" for item in jobs)
+                else "completed_with_errors"
+            )
+            batch.completed_at = datetime.now(UTC)
+        session.commit()
+        return {"status": "cancelled"}
+
     @app.post("/api/deliveries/{delivery_id}/resend", status_code=status.HTTP_201_CREATED)
     def resend_delivery(
         delivery_id: str, session: Session = Depends(session_dependency)
