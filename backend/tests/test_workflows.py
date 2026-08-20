@@ -5,7 +5,14 @@ from zipfile import ZipFile
 from kindrop.database import Database
 from kindrop.domain import ConversionPreset
 from kindrop.models import AppSettings, Batch, Candidate, Job, Revision, Scan
-from kindrop.services import DriveComic, JobProcessor, ScanProcessor
+from kindrop.services import (
+    AmbiguousSendError,
+    DriveComic,
+    JobProcessor,
+    PermanentSendError,
+    ScanProcessor,
+    TransientSendError,
+)
 
 
 class FakeDrive:
@@ -46,18 +53,110 @@ class FakeKcc:
 
 
 class FakeGmail:
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, str, str]] = []
+    """Scriptable Gmail fake.
 
-    def send_epub(self, recipient: str, subject: str, artifact: Path) -> str:
+    `issues` yields one outcome per send call (None succeeds, an exception is raised);
+    `sent_folder` yields one outcome per Sent-folder probe (a message id, None, or an
+    exception). Both default to success / not found once exhausted.
+    """
+
+    def __init__(
+        self,
+        issues: list[Exception | None] | None = None,
+        sent_folder: list[str | None | Exception] | None = None,
+    ) -> None:
+        self.sent: list[tuple[str, str, str]] = []
+        self.message_ids: list[str] = []
+        self.probes: list[str] = []
+        self.issues = list(issues or [])
+        self.sent_folder = list(sent_folder or [])
+
+    def send_epub(
+        self, recipient: str, subject: str, artifact: Path, *, rfc822_message_id: str
+    ) -> str:
+        self.message_ids.append(rfc822_message_id)
+        if self.issues:
+            issue = self.issues.pop(0)
+            if issue is not None:
+                raise issue
         self.sent.append((recipient, subject, artifact.name))
         return f"gmail-{len(self.sent)}"
+
+    def find_sent_message(self, rfc822_message_id: str) -> str | None:
+        self.probes.append(rfc822_message_id)
+        outcome = self.sent_folder.pop(0) if self.sent_folder else None
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
 
 def make_cbz(path: Path) -> None:
     with ZipFile(path, "w") as comic:
         comic.writestr("ComicInfo.xml", "<ComicInfo><Title>Volume Seven</Title></ComicInfo>")
         comic.writestr("001.jpg", b"image")
+
+
+def make_ready_job(database: Database, archive: Path) -> str:
+    with database.session() as session:
+        session.add(
+            AppSettings(
+                id=1,
+                kindle_email="reader_123@kindle.com",
+                preset=ConversionPreset().model_dump(mode="json"),
+            )
+        )
+        revision = Revision(
+            drive_file_id="drive-1",
+            fingerprint="drive-1:md5:abc",
+            name="volume.cbz",
+            path="Series/volume.cbz",
+            size=archive.stat().st_size,
+            status="candidate",
+        )
+        session.add(revision)
+        session.flush()
+        candidate = Candidate(
+            revision_id=revision.id,
+            status="queued",
+            resolved_title="Volume Seven",
+            cache_path=str(archive),
+        )
+        session.add(candidate)
+        session.flush()
+        batch = Batch(preset=ConversionPreset().model_dump(mode="json"))
+        session.add(batch)
+        session.flush()
+        job = Job(
+            batch_id=batch.id,
+            candidate_id=candidate.id,
+            preset=batch.preset,
+            title="Volume Seven",
+        )
+        session.add(job)
+        session.commit()
+        return job.id
+
+
+def run_job(
+    tmp_path: Path, database: Database, archive: Path, gmail: FakeGmail, job_id: str
+) -> list[float]:
+    slept: list[float] = []
+    JobProcessor(
+        database=database,
+        drive=FakeDrive(archive),
+        kcc=FakeKcc(),
+        gmail=gmail,
+        cache_root=tmp_path / "jobs",
+        wait_between_deliveries=lambda: None,
+        sleep=slept.append,
+    ).run(job_id)
+    return slept
+
+
+def first_delivery(session, job_id: str):
+    job = session.get(Job, job_id)
+    artifacts = sorted(job.artifacts, key=lambda item: item.part_number)
+    return job, artifacts[0].delivery
 
 
 def test_scan_yields_to_dispatches_between_each_inspected_item(tmp_path: Path) -> None:
@@ -417,3 +516,124 @@ def test_merged_job_builds_one_volume_and_marks_every_chapter_sent(tmp_path: Pat
     ]
     assert not (tmp_path / "work" / "sources" / job_id).exists()
     assert all(not archive.exists() for archive in chapters)
+
+
+def test_ambiguous_send_recovers_when_the_message_is_in_the_sent_folder(tmp_path: Path) -> None:
+    archive = tmp_path / "source.cbz"
+    make_cbz(archive)
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    gmail = FakeGmail(
+        issues=[AmbiguousSendError("no response"), None],
+        sent_folder=["gmail-recovered"],
+    )
+    job_id = make_ready_job(database, archive)
+
+    slept = run_job(tmp_path, database, archive, gmail, job_id)
+
+    with database.session() as session:
+        job, delivery = first_delivery(session, job_id)
+        assert job.status == "sent"
+        assert delivery.status == "sent_unconfirmed"
+        assert delivery.gmail_message_id == "gmail-recovered"
+        assert delivery.error_detail is None
+        assert [attempt.status for attempt in delivery.attempts] == ["sent"]
+    assert gmail.probes == [gmail.message_ids[0]]
+    assert slept == [60.0]
+    assert len(gmail.sent) == 1, "the recovered part must not be resent"
+
+
+def test_ambiguous_send_missing_from_sent_folder_is_resent(tmp_path: Path) -> None:
+    archive = tmp_path / "source.cbz"
+    make_cbz(archive)
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    gmail = FakeGmail(issues=[AmbiguousSendError("no response"), None, None])
+    job_id = make_ready_job(database, archive)
+
+    run_job(tmp_path, database, archive, gmail, job_id)
+
+    with database.session() as session:
+        job, delivery = first_delivery(session, job_id)
+        assert job.status == "sent"
+        assert delivery.status == "sent_unconfirmed"
+        assert delivery.gmail_message_id == "gmail-1"
+        assert [attempt.status for attempt in delivery.attempts] == ["unverified", "sent"]
+    assert len(gmail.probes) == 3, "every probe must run before deciding to resend"
+    assert gmail.message_ids[0] != gmail.message_ids[1], "a resend needs a fresh Message-ID"
+
+
+def test_never_verified_send_fails_the_delivery_and_keeps_the_files(tmp_path: Path) -> None:
+    archive = tmp_path / "source.cbz"
+    make_cbz(archive)
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    gmail = FakeGmail(issues=[AmbiguousSendError("no response")] * 3)
+    job_id = make_ready_job(database, archive)
+
+    run_job(tmp_path, database, archive, gmail, job_id)
+
+    with database.session() as session:
+        job, delivery = first_delivery(session, job_id)
+        assert job.status == "failed"
+        assert delivery.status == "failed"
+        assert "Sent folder" in delivery.error_detail
+        assert [attempt.status for attempt in delivery.attempts] == ["unverified"] * 3
+        candidate = session.get(Candidate, job.candidate_id)
+        assert candidate.cache_path is not None
+        artifact_paths = [Path(item.path) for item in job.artifacts]
+    assert archive.exists(), "the source must survive a failed delivery"
+    assert all(path.exists() for path in artifact_paths), "EPUBs must survive for a resend"
+    assert len(gmail.probes) == 9
+
+
+def test_permanent_send_error_fails_immediately_without_resend(tmp_path: Path) -> None:
+    archive = tmp_path / "source.cbz"
+    make_cbz(archive)
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    gmail = FakeGmail(issues=[PermanentSendError("Gmail rejected the send with HTTP 400")])
+    job_id = make_ready_job(database, archive)
+
+    run_job(tmp_path, database, archive, gmail, job_id)
+
+    with database.session() as session:
+        job, delivery = first_delivery(session, job_id)
+        assert job.status == "failed"
+        assert delivery.status == "failed"
+        assert "HTTP 400" in delivery.error_detail
+        assert [attempt.status for attempt in delivery.attempts] == ["failed"]
+    assert len(gmail.message_ids) == 1, "a permanent rejection must not be retried"
+    assert gmail.probes == []
+
+
+def test_exhausted_throttling_fails_the_delivery(tmp_path: Path) -> None:
+    archive = tmp_path / "source.cbz"
+    make_cbz(archive)
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    gmail = FakeGmail(issues=[TransientSendError("throttled")] * 3)
+    job_id = make_ready_job(database, archive)
+
+    run_job(tmp_path, database, archive, gmail, job_id)
+
+    with database.session() as session:
+        job, delivery = first_delivery(session, job_id)
+        assert job.status == "failed"
+        assert delivery.status == "failed"
+        assert "throttling" in delivery.error_detail
+        assert [attempt.status for attempt in delivery.attempts] == ["transient_failed"] * 3
+
+
+def test_failed_probes_count_and_lead_to_a_resend(tmp_path: Path) -> None:
+    archive = tmp_path / "source.cbz"
+    make_cbz(archive)
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    gmail = FakeGmail(
+        issues=[AmbiguousSendError("no response"), None, None],
+        sent_folder=[RuntimeError("wifi down")] * 3,
+    )
+    job_id = make_ready_job(database, archive)
+
+    run_job(tmp_path, database, archive, gmail, job_id)
+
+    with database.session() as session:
+        job, delivery = first_delivery(session, job_id)
+        assert job.status == "sent"
+        assert delivery.status == "sent_unconfirmed"
+        assert [attempt.status for attempt in delivery.attempts] == ["unverified", "sent"]

@@ -8,7 +8,9 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from pathlib import Path
 
+import httplib2
 from google.oauth2.credentials import Credentials
+from google_auth_httplib2 import AuthorizedHttp
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
@@ -17,7 +19,7 @@ from .amazon_mail import AMAZON_DOMAINS
 from .crypto import SecretStore
 from .database import Database
 from .models import AppSettings
-from .services import AmbiguousSendError, DriveComic, TransientSendError
+from .services import AmbiguousSendError, DriveComic, PermanentSendError, TransientSendError
 
 GOOGLE_SCOPES = [
     "openid",
@@ -27,6 +29,9 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
 ]
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+# Per socket operation, so a 20 MiB upload on slow wifi still fits; a short default
+# timeout is what turns slow networks into ambiguous sends.
+GMAIL_HTTP_TIMEOUT_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -68,7 +73,10 @@ class GoogleServiceFactory:
         return build("drive", "v3", credentials=self.credentials(), cache_discovery=False)
 
     def gmail(self):
-        return build("gmail", "v1", credentials=self.credentials(), cache_discovery=False)
+        http = AuthorizedHttp(
+            self.credentials(), http=httplib2.Http(timeout=GMAIL_HTTP_TIMEOUT_SECONDS)
+        )
+        return build("gmail", "v1", http=http, cache_discovery=False)
 
 
 class GoogleDriveGateway:
@@ -165,10 +173,13 @@ class GoogleGmailGateway:
         profile = self.services.gmail().users().getProfile(userId="me").execute()
         return profile["emailAddress"]
 
-    def send_epub(self, recipient: str, subject: str, artifact: Path) -> str:
+    def send_epub(
+        self, recipient: str, subject: str, artifact: Path, *, rfc822_message_id: str
+    ) -> str:
         message = EmailMessage()
         message["To"] = recipient
         message["Subject"] = subject
+        message["Message-ID"] = rfc822_message_id
         message.set_content(
             f"Kindrop prepared {artifact.name}. This is a personal Send to Kindle delivery."
         )
@@ -188,14 +199,36 @@ class GoogleGmailGateway:
                 .execute()
             )
         except HttpError as error:
-            if error.resp.status == 429:
+            status = error.resp.status
+            # Gmail sometimes reports throttling as 403 rateLimitExceeded instead of 429.
+            throttled = status == 429 or (
+                status == 403 and b"ateLimitExceeded" in (error.content or b"")
+            )
+            if throttled:
                 raise TransientSendError("Gmail temporarily throttled the request") from error
-            raise AmbiguousSendError(
-                f"Gmail returned HTTP {error.resp.status} after the send request"
+            if status >= 500:
+                raise AmbiguousSendError(
+                    f"Gmail returned HTTP {status} after the send request"
+                ) from error
+            raise PermanentSendError(
+                f"Gmail rejected the send with HTTP {status}; the message was not created"
             ) from error
         except (TimeoutError, ConnectionError, OSError) as error:
             raise AmbiguousSendError("The Gmail send response was not received") from error
         return response["id"]
+
+    def find_sent_message(self, rfc822_message_id: str) -> str | None:
+        # rfc822msgid: expects the id without the surrounding angle brackets.
+        query = f"in:sent rfc822msgid:{rfc822_message_id.strip('<>')}"
+        response = (
+            self.services.gmail()
+            .users()
+            .messages()
+            .list(userId="me", q=query, maxResults=1)
+            .execute()
+        )
+        messages = response.get("messages", [])
+        return messages[0]["id"] if messages else None
 
     def list_amazon_message_ids(self) -> list[str]:
         sender_filter = "from:(" + " OR ".join(sorted(AMAZON_DOMAINS)) + ")"

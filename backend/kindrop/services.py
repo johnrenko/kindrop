@@ -1,8 +1,10 @@
 import hashlib
 import shutil
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from email.utils import make_msgid
 from pathlib import Path
 from typing import Protocol
 
@@ -30,6 +32,10 @@ from .models import (
 
 MAX_EPUB_BYTES = 20 * 1024 * 1024
 CACHE_TTL = timedelta(hours=24)
+MAX_SEND_ATTEMPTS = 3
+SENT_PROBE_COUNT = 3
+# The first probe wait also absorbs Gmail's Sent-folder indexing delay.
+SENT_PROBE_WAIT_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -55,7 +61,11 @@ class KccGateway(Protocol):
 
 
 class GmailGateway(Protocol):
-    def send_epub(self, recipient: str, subject: str, artifact: Path) -> str: ...
+    def send_epub(
+        self, recipient: str, subject: str, artifact: Path, *, rfc822_message_id: str
+    ) -> str: ...
+
+    def find_sent_message(self, rfc822_message_id: str) -> str | None: ...
 
 
 class TransientSendError(RuntimeError):
@@ -63,7 +73,11 @@ class TransientSendError(RuntimeError):
 
 
 class AmbiguousSendError(RuntimeError):
-    """A send may have succeeded, so retrying automatically could duplicate it."""
+    """A send may have succeeded; the Sent folder must be checked before resending."""
+
+
+class PermanentSendError(RuntimeError):
+    """Gmail rejected the request outright, so no message was created and no retry can help."""
 
 
 def _safe_filename(file_id: str, name: str) -> str:
@@ -265,6 +279,7 @@ class JobProcessor:
         gmail: GmailGateway,
         cache_root: Path,
         wait_between_deliveries: Callable[[], None],
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.database = database
         self.drive = drive
@@ -272,6 +287,7 @@ class JobProcessor:
         self.gmail = gmail
         self.cache_root = cache_root
         self.wait_between_deliveries = wait_between_deliveries
+        self.sleep = sleep
 
     def run(self, job_id: str) -> None:
         source_path: Path | None = None
@@ -466,7 +482,8 @@ class JobProcessor:
     def _send_artifact(
         self, job_id: str, part_number: int, recipient: str, subject: str, path: Path
     ) -> None:
-        for attempt_number in range(1, 4):
+        for attempt_number in range(1, MAX_SEND_ATTEMPTS + 1):
+            rfc822_message_id = make_msgid(domain="kindrop.local")
             with self.database.session() as session:
                 artifact = session.scalar(
                     select(Artifact)
@@ -479,36 +496,55 @@ class JobProcessor:
                 attempt = DeliveryAttempt(
                     delivery_id=artifact.delivery.id,
                     number=attempt_number,
+                    # Committed before the send so an interrupted verification can
+                    # still be resolved after a restart.
+                    rfc822_message_id=rfc822_message_id,
                 )
                 session.add(attempt)
                 artifact.delivery.attempt_count = attempt_number
                 session.commit()
                 attempt_id = attempt.id
+                delivery_id = attempt.delivery_id
 
             self.wait_between_deliveries()
             try:
-                message_id = self.gmail.send_epub(recipient, subject, path)
+                message_id = self.gmail.send_epub(
+                    recipient, subject, path, rfc822_message_id=rfc822_message_id
+                )
             except TransientSendError as error:
                 self._finish_attempt(attempt_id, "transient_failed", error=str(error))
-                if attempt_number == 3:
+                if attempt_number == MAX_SEND_ATTEMPTS:
+                    self._fail_delivery(
+                        delivery_id, "Gmail kept throttling this message; resend it later."
+                    )
                     raise RuntimeError("Gmail send failed after three safe retries") from error
                 continue
+            except PermanentSendError as error:
+                self._finish_attempt(attempt_id, "failed", error=str(error))
+                self._fail_delivery(delivery_id, str(error))
+                raise
             except AmbiguousSendError as error:
-                with self.database.session() as session:
-                    attempt = session.get(DeliveryAttempt, attempt_id)
-                    delivery = session.get(Delivery, attempt.delivery_id)
-                    attempt.status = "unknown"
-                    attempt.error = str(error)
-                    attempt.completed_at = datetime.now(UTC)
-                    delivery.status = "unknown"
-                    delivery.error_detail = (
-                        "Gmail may have accepted this message. Choose resend manually "
-                        "to avoid a duplicate."
+                if self._verify_ambiguous_send(attempt_id, delivery_id, str(error)):
+                    return
+                if attempt_number == MAX_SEND_ATTEMPTS:
+                    self._fail_delivery(
+                        delivery_id,
+                        "The message never appeared in Gmail's Sent folder after "
+                        f"{MAX_SEND_ATTEMPTS} sends.",
                     )
-                    delivery.sent_at = datetime.now(UTC)
-                    add_event(session, "delivery", delivery.id, "delivery.unknown")
+                    raise RuntimeError(
+                        "The Gmail send could not be confirmed after three attempts"
+                    ) from error
+                with self.database.session() as session:
+                    add_event(
+                        session,
+                        "delivery",
+                        delivery_id,
+                        "delivery.resend",
+                        attempt=attempt_number + 1,
+                    )
                     session.commit()
-                return
+                continue
             except Exception as error:
                 self._finish_attempt(attempt_id, "failed", error=str(error))
                 raise
@@ -531,6 +567,65 @@ class JobProcessor:
                 )
                 session.commit()
             return
+
+    def _verify_ambiguous_send(self, attempt_id: str, delivery_id: str, error: str) -> bool:
+        """Probe Gmail's Sent folder to learn whether an ambiguous send actually left."""
+        with self.database.session() as session:
+            attempt = session.get(DeliveryAttempt, attempt_id)
+            delivery = session.get(Delivery, delivery_id)
+            attempt.status = "unknown"
+            attempt.error = error
+            attempt.completed_at = datetime.now(UTC)
+            rfc822_message_id = attempt.rfc822_message_id
+            delivery.status = "unknown"
+            delivery.error_detail = (
+                "Kindrop is checking Gmail's Sent folder and will resend "
+                "automatically if the message never left."
+            )
+            delivery.sent_at = datetime.now(UTC)
+            add_event(session, "delivery", delivery.id, "delivery.verifying")
+            session.commit()
+
+        message_id: str | None = None
+        for _probe in range(SENT_PROBE_COUNT):
+            self.sleep(SENT_PROBE_WAIT_SECONDS)
+            try:
+                message_id = self.gmail.find_sent_message(rfc822_message_id)
+            except Exception:  # an unreachable Gmail counts as a failed probe
+                continue
+            if message_id:
+                break
+
+        if not message_id:
+            self._finish_attempt(attempt_id, "unverified", error=error)
+            return False
+
+        with self.database.session() as session:
+            attempt = session.get(DeliveryAttempt, attempt_id)
+            delivery = session.get(Delivery, delivery_id)
+            attempt.status = "sent"
+            attempt.gmail_message_id = message_id
+            delivery.status = "sent_unconfirmed"
+            delivery.gmail_message_id = message_id
+            delivery.error_detail = None
+            delivery.sent_at = datetime.now(UTC)
+            add_event(
+                session,
+                "delivery",
+                delivery.id,
+                "delivery.recovered",
+                gmail_message_id=message_id,
+            )
+            session.commit()
+        return True
+
+    def _fail_delivery(self, delivery_id: str, detail: str) -> None:
+        with self.database.session() as session:
+            delivery = session.get(Delivery, delivery_id)
+            delivery.status = "failed"
+            delivery.error_detail = detail
+            add_event(session, "delivery", delivery.id, "delivery.failed", message=detail)
+            session.commit()
 
     def _finish_attempt(self, attempt_id: str, status: str, *, error: str) -> None:
         with self.database.session() as session:

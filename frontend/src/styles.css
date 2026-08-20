@@ -126,6 +126,10 @@
   .status--warning { color: var(--amber); }
   .status--danger { color: var(--red); }
   .status--active { color: var(--accent); }
+  .status--failed, .status--rejected { color: var(--red); }
+  .status--unknown { color: var(--amber); }
+  .status--unknown .status__dot { animation: status-pulse 1.2s ease-in-out infinite; }
+  @keyframes status-pulse { 50% { opacity: .25; } }
   .empty-state { padding: clamp(3rem, 8vw, 7rem) 0; border-block: 1px solid var(--line); }
   .empty-state > * { max-width: 540px; }
   .empty-state p { color: var(--muted); line-height: 1.6; }
@@ -196,7 +200,10 @@
   .delivery-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1rem; align-items: center; padding: .8rem 0; border-top: 1px dashed var(--line); }
   .delivery-list small { color: var(--muted); }
   .delivery-resend { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; }
-  .delivery-resend .notice--error { display: inline-flex; align-items: center; gap: .45rem; margin: 0; font-size: .85rem; }
+  .delivery-resend .notice--error, .delivery-resend .notice--verifying { display: inline-flex; align-items: center; gap: .45rem; margin: 0; font-size: .85rem; }
+  .notice--verifying { color: var(--muted); }
+  .notice--verifying .spin { animation: verify-spin 1.6s linear infinite; color: var(--amber); }
+  @keyframes verify-spin { to { transform: rotate(360deg); } }
   .error-code { padding: .35rem .5rem; background: oklch(49% 0.18 28 / 9%); color: var(--red); font-family: ui-monospace, monospace; }
   .settings-sections { border-top: 1px solid var(--ink); }
   .settings-section { display: grid; grid-template-columns: minmax(180px, .45fr) minmax(0, 1fr); gap: 3rem; padding: 2.5rem 0; border-bottom: 1px solid var(--line); }

@@ -1,10 +1,20 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cryptography.fernet import Fernet
 from sqlalchemy import select
 
 from kindrop.config import RuntimeSettings
-from kindrop.models import Batch, Candidate, Event, Job, Revision
+from kindrop.models import (
+    Artifact,
+    Batch,
+    Candidate,
+    Delivery,
+    DeliveryAttempt,
+    Event,
+    Job,
+    Revision,
+)
 from kindrop.worker import Worker
 
 
@@ -108,3 +118,122 @@ def test_mail_monitor_errors_are_recorded_as_events(tmp_path: Path) -> None:
         events = session.scalars(select(Event).where(Event.kind == "mail.error")).all()
     assert len(events) == 1
     assert "Gmail exploded" in str(events[0].payload)
+
+
+def _add_unknown_delivery(session, *, message_id: str | None) -> str:
+    batch = Batch(preset={})
+    session.add(batch)
+    session.flush()
+    revision = Revision(
+        drive_file_id="drive-9",
+        fingerprint="drive-9:md5:x",
+        name="volume.cbz",
+        path="Series/volume.cbz",
+        size=1,
+        status="sent",
+    )
+    session.add(revision)
+    session.flush()
+    candidate = Candidate(revision_id=revision.id, status="sent", resolved_title="Vol 9")
+    session.add(candidate)
+    session.flush()
+    job = Job(batch_id=batch.id, candidate_id=candidate.id, preset={}, title="Vol 9", status="sent")
+    session.add(job)
+    session.flush()
+    artifact = Artifact(job_id=job.id, filename="Vol 9.epub", path="/tmp/vol9.epub", size=1)
+    session.add(artifact)
+    session.flush()
+    delivery = Delivery(
+        artifact_id=artifact.id,
+        status="unknown",
+        sent_at=datetime.now(UTC),
+        attempt_count=1,
+        error_detail="Kindrop is checking Gmail's Sent folder",
+    )
+    session.add(delivery)
+    session.flush()
+    session.add(
+        DeliveryAttempt(
+            delivery_id=delivery.id,
+            number=1,
+            status="unknown",
+            rfc822_message_id=message_id,
+        )
+    )
+    return delivery.id
+
+
+class ProbingGmail:
+    def __init__(self, outcome: str | None | Exception) -> None:
+        self.outcome = outcome
+        self.probes: list[str] = []
+
+    def find_sent_message(self, rfc822_message_id: str) -> str | None:
+        self.probes.append(rfc822_message_id)
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+def test_startup_recovers_an_unknown_delivery_found_in_the_sent_folder(tmp_path: Path) -> None:
+    worker = _make_worker(tmp_path)
+    with worker.database.session() as session:
+        delivery_id = _add_unknown_delivery(session, message_id="<a@kindrop.local>")
+        session.commit()
+    worker.gmail = ProbingGmail("gm-9")
+
+    worker.recover_interrupted_work()
+
+    with worker.database.session() as session:
+        delivery = session.get(Delivery, delivery_id)
+        assert delivery.status == "sent_unconfirmed"
+        assert delivery.gmail_message_id == "gm-9"
+        assert delivery.error_detail is None
+        assert delivery.attempts[-1].status == "sent"
+    assert worker.gmail.probes == ["<a@kindrop.local>"]
+
+
+def test_startup_fails_an_unknown_delivery_missing_from_the_sent_folder(tmp_path: Path) -> None:
+    worker = _make_worker(tmp_path)
+    with worker.database.session() as session:
+        delivery_id = _add_unknown_delivery(session, message_id="<a@kindrop.local>")
+        session.commit()
+    worker.gmail = ProbingGmail(None)
+
+    worker.resolve_interrupted_unknowns()
+
+    with worker.database.session() as session:
+        delivery = session.get(Delivery, delivery_id)
+        assert delivery.status == "failed"
+        assert "resend it" in delivery.error_detail
+        assert delivery.attempts[-1].status == "unverified"
+
+
+def test_startup_fails_a_legacy_unknown_without_message_id(tmp_path: Path) -> None:
+    worker = _make_worker(tmp_path)
+    with worker.database.session() as session:
+        delivery_id = _add_unknown_delivery(session, message_id=None)
+        session.commit()
+    worker.gmail = ProbingGmail("gm-9")
+
+    worker.resolve_interrupted_unknowns()
+
+    with worker.database.session() as session:
+        delivery = session.get(Delivery, delivery_id)
+        assert delivery.status == "failed"
+        assert "before automatic verification" in delivery.error_detail
+    assert worker.gmail.probes == [], "a delivery without Message-ID cannot be probed"
+
+
+def test_startup_leaves_unknown_when_gmail_is_unreachable(tmp_path: Path) -> None:
+    worker = _make_worker(tmp_path)
+    with worker.database.session() as session:
+        delivery_id = _add_unknown_delivery(session, message_id="<a@kindrop.local>")
+        session.commit()
+    worker.gmail = ProbingGmail(RuntimeError("Connect a Google account first"))
+
+    worker.resolve_interrupted_unknowns()
+
+    with worker.database.session() as session:
+        delivery = session.get(Delivery, delivery_id)
+        assert delivery.status == "unknown", "an unreachable Gmail must not settle the delivery"

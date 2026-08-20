@@ -15,7 +15,7 @@ Provide a free, personal, on-demand localhost application that converts new CBR/
 - Conversion preset snapshots belong to the batch/job history.
 - Processing is sequential. Gmail sends are at least one minute apart and target artifacts are at most 20 MiB.
 - Amazon mail can prove a rejection or request verification, but silence is only `sent_unconfirmed`.
-- Ambiguous sends are never retried automatically.
+- Ambiguous sends are verified against the Gmail Sent folder and resent automatically, up to three sends in total; Kindle-side duplicates are accepted. Kindrop still never claims positive Kindle delivery.
 
 ## User journeys
 
@@ -23,7 +23,7 @@ The Settings page guides OAuth client upload, Google connection, My Drive folder
 
 ## Operational states
 
-Jobs use `queued`, `downloading`, `converting`, `sending`, `sent`, `failed`, and `cancelled`. Deliveries use `pending`, `sent_unconfirmed`, `verification_required`, `verified`, `rejected`, `unknown`, and `action_required`.
+Jobs use `queued`, `downloading`, `converting`, `sending`, `sent`, `failed`, and `cancelled`. Deliveries use `pending`, `sent_unconfirmed`, `verification_required`, `verified`, `rejected`, `unknown`, `failed`, and `action_required`. `unknown` is transient: it means the Sent-folder verification is in progress.
 
 ## Acceptance focus
 

@@ -37,7 +37,7 @@ A temporary EPUB produced by a Conversion Job. A large source can produce multip
 _Avoid_: Output, ebook
 
 **Delivery**:
-One attempt to send one Artifact to the Kindle Destination and reconcile Amazon's response.
+The process of sending one Artifact to the Kindle Destination and reconciling Amazon's response; it may span several send attempts.
 _Avoid_: Email, upload
 
 **Kindle Destination**:

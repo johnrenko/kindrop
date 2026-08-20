@@ -29,7 +29,7 @@ For the Google project steps, see [docs/google-cloud-setup.md](docs/google-cloud
 - SQLite runs in WAL mode in the `kindrop-data` volume.
 - Temporary archives and EPUB files live in `kindrop-cache`; inspected sources expire after 24 hours.
 - OAuth material is encrypted with `secrets/kindrop.key`, mounted read-only. Back up this file together with the data volume. Losing it makes stored Google credentials unreadable.
-- Every Gmail send start is separated by at least 60 seconds. Confirmed throttling is retried up to three times. An uncertain response becomes **Unknown** and requires an explicit resend decision.
+- Every Gmail send start is separated by at least 60 seconds. Confirmed throttling is retried up to three times. An uncertain response becomes a transient **Unknown**: Kindrop checks Gmail's Sent folder and resends automatically if the message never left (three sends at most, Kindle-side duplicates accepted). A delivery that can never be confirmed becomes **Failed** with the reason shown.
 - A sent item remains **Sent — unconfirmed** unless Amazon asks for verification or reports a rejection. Kindrop does not claim positive Kindle delivery.
 
 Stop the services with `docker compose down`. Add `-v` only if you intentionally want to delete Kindrop's database and cache volumes.

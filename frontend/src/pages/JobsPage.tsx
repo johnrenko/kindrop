@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Ban, RotateCcw } from "lucide-react";
+import { AlertTriangle, Ban, Loader2, RotateCcw } from "lucide-react";
 
 import { api } from "../api";
 import { EmptyState } from "../components/EmptyState";
@@ -102,10 +102,14 @@ export function JobsPage() {
                             <div><strong>{delivery.filename}</strong><small>Part {delivery.part_number}/{delivery.total_parts}</small></div>
                             <StatusBadge status={delivery.status} />
                             {delivery.error_code && <span className="error-code">{delivery.error_code}</span>}
-                            {delivery.status === "unknown" && (
+                            {["unknown", "failed"].includes(delivery.status) && (
                               <div className="delivery-resend">
                                 {delivery.error_detail && (
-                                  <p className="notice notice--error"><AlertTriangle size={15} /> {delivery.error_detail}</p>
+                                  delivery.status === "failed" ? (
+                                    <p className="notice notice--error"><AlertTriangle size={15} /> {delivery.error_detail}</p>
+                                  ) : (
+                                    <p className="notice notice--verifying"><Loader2 size={15} className="spin" /> {delivery.error_detail}</p>
+                                  )
                                 )}
                                 <button
                                   className="button button--secondary"

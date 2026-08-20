@@ -172,6 +172,7 @@ class DeliveryAttempt(Base):
     number: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(32), default="started")
     gmail_message_id: Mapped[str | None] = mapped_column(String(200))
+    rfc822_message_id: Mapped[str | None] = mapped_column(String(300))
     error: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -11,9 +11,9 @@ from .crypto import SecretStore
 from .database import Database
 from .google import GoogleDriveGateway, GoogleGmailGateway, GoogleServiceFactory
 from .mail_monitor import AmazonMailMonitor, AmazonVerificationClient
-from .models import Candidate, Event, Job, Scan
+from .models import Candidate, Delivery, Event, Job, Scan
 from .runners import KccRunner
-from .services import JobProcessor, ScanProcessor
+from .services import JobProcessor, ScanProcessor, add_event
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,65 @@ class Worker:
                     "before retrying."
                 )
                 job.completed_at = datetime.now(UTC)
+            session.commit()
+        self.resolve_interrupted_unknowns()
+
+    def resolve_interrupted_unknowns(self) -> None:
+        """Settle deliveries the worker left mid-verification; never resend from here."""
+        with self.database.session() as session:
+            deliveries = session.scalars(
+                select(Delivery).where(Delivery.status == "unknown")
+            ).all()
+            for delivery in deliveries:
+                last_attempt = delivery.attempts[-1] if delivery.attempts else None
+                message_ref = last_attempt.rfc822_message_id if last_attempt else None
+                if not message_ref:
+                    # Sent before attempts carried a Message-ID, so it cannot be verified.
+                    delivery.status = "failed"
+                    delivery.error_detail = (
+                        "Sent before automatic verification existed; "
+                        "check Gmail or resend manually."
+                    )
+                    add_event(
+                        session,
+                        "delivery",
+                        delivery.id,
+                        "delivery.failed",
+                        message=delivery.error_detail,
+                    )
+                    continue
+                try:
+                    message_id = self.gmail.find_sent_message(message_ref)
+                except Exception:
+                    logger.exception("Could not verify an interrupted delivery")
+                    continue
+                if message_id:
+                    last_attempt.status = "sent"
+                    last_attempt.gmail_message_id = message_id
+                    delivery.status = "sent_unconfirmed"
+                    delivery.gmail_message_id = message_id
+                    delivery.error_detail = None
+                    add_event(
+                        session,
+                        "delivery",
+                        delivery.id,
+                        "delivery.recovered",
+                        gmail_message_id=message_id,
+                    )
+                else:
+                    last_attempt.status = "unverified"
+                    delivery.status = "failed"
+                    delivery.error_detail = (
+                        "The worker restarted during verification and the message is "
+                        "not in Gmail's Sent folder; resend it."
+                    )
+                    add_event(
+                        session,
+                        "delivery",
+                        delivery.id,
+                        "delivery.failed",
+                        message=delivery.error_detail,
+                    )
             session.commit()
 
     def purge_expired_cache(self) -> None:

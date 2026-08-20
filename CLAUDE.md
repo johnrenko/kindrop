@@ -57,7 +57,7 @@ Key backend modules:
 - `google.py` — real Drive/Gmail gateways; `oauth.py` + `crypto.SecretStore` encrypt OAuth tokens with `secrets/kindrop.key`.
 - `kcc.py` builds the KCC command line from a `ConversionPreset`; `runners.KccRunner` executes it as a subprocess (the Docker image is based on the KCC image, with `unrar` added — some CBRs use RAR methods p7zip cannot read).
 - `mail_monitor.py` / `amazon_mail.py` — poll Gmail for Amazon replies, classify rejections, follow verification links only over HTTPS on approved Amazon domains.
-- `worker.DeliveryRateLimiter` — Gmail sends are spaced ≥60 s apart; an ambiguous send response becomes **Unknown** and requires an explicit user resend decision. Never claim positive Kindle delivery: sent items stay "Sent — unconfirmed".
+- `worker.DeliveryRateLimiter` — Gmail sends are spaced ≥60 s apart; an ambiguous send response becomes a transient **Unknown**: the worker checks Gmail's Sent folder (via the attempt's RFC 822 Message-ID) and resends automatically if the message never left, up to three sends in total (Kindle-side duplicates are accepted, see ADR 0003). Never claim positive Kindle delivery: sent items stay "Sent — unconfirmed".
 
 Frontend: React 19 + TanStack Router (`router.tsx`) + TanStack Query (`query.ts`). Pages in `src/pages/` (Dashboard, Review, Jobs, Settings), thin API client in `src/api.ts`, live updates via SSE.
 

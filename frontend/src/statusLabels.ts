@@ -18,6 +18,6 @@ export const statusLabels: Record<string, string> = {
   verification_required: "Verification required",
   verified: "Verified",
   rejected: "Rejected",
-  unknown: "Unknown",
+  unknown: "Verifying…",
   action_required: "Action required",
 };
