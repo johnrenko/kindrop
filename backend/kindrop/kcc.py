@@ -33,6 +33,10 @@ def build_kcc_command(
             "1",
             "--targetsize",
             "20",
+            # The containers mount /tmp as a 256 MiB tmpfs (compose.yaml); KCC's
+            # per-page renders easily exceed it, so keep the workdir beside the
+            # source on the /cache volume.
+            "--tempdir",
             "--title",
             title,
             "--output",

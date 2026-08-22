@@ -96,6 +96,7 @@ def test_kcc_command_is_safe_and_reproducible() -> None:
         "1",
         "--targetsize",
         "20",
+        "--tempdir",
         "--title",
         "My Volume",
         "--output",
