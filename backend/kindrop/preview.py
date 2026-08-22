@@ -1,11 +1,11 @@
-"""Extract a small first-page preview image from a cached CBZ/CBR archive."""
+"""Extract a small first-page preview image from a cached CBZ/CBR/PDF source."""
 
 import io
 import subprocess
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
-from .metadata import ArchiveMetadataError
+from .metadata import ArchiveMetadataError, open_pdf_document
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 MAX_PREVIEW_SOURCE_BYTES = 50 * 1024 * 1024
@@ -67,6 +67,15 @@ def _first_page_cbr(archive_path: Path) -> bytes:
     return extraction.stdout
 
 
+def _first_page_pdf(path: Path) -> bytes:
+    with open_pdf_document(path) as document:
+        try:
+            pixmap = document[0].get_pixmap()
+            return pixmap.tobytes("png")
+        except (RuntimeError, ValueError) as error:
+            raise ArchiveMetadataError("The PDF page could not be rendered") from error
+
+
 def extract_preview(archive_path: Path, destination: Path) -> Path:
     """Write a downscaled JPEG of the archive's first page to destination."""
     from PIL import Image
@@ -76,8 +85,10 @@ def extract_preview(archive_path: Path, destination: Path) -> Path:
         page = _first_page_cbz(archive_path)
     elif extension == ".cbr":
         page = _first_page_cbr(archive_path)
+    elif extension == ".pdf":
+        page = _first_page_pdf(archive_path)
     else:
-        raise ArchiveMetadataError("Only CBR and CBZ archives are supported")
+        raise ArchiveMetadataError("Only CBR, CBZ and PDF files are supported")
 
     try:
         with Image.open(io.BytesIO(page)) as image:

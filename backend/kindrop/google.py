@@ -18,6 +18,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from .amazon_mail import AMAZON_DOMAINS
 from .crypto import SecretStore
 from .database import Database
+from .domain import COMIC_SUFFIXES
 from .models import AppSettings
 from .services import AmbiguousSendError, DriveComic, PermanentSendError, TransientSendError
 
@@ -142,7 +143,7 @@ class GoogleDriveGateway:
                     item_path = f"{parent_path}/{item['name']}".lstrip("/")
                     if item.get("mimeType") == FOLDER_MIME_TYPE:
                         queue.append((item["id"], item_path))
-                    elif Path(item["name"]).suffix.lower() in {".cbr", ".cbz"}:
+                    elif Path(item["name"]).suffix.lower() in COMIC_SUFFIXES:
                         yield DriveComic(
                             file_id=item["id"],
                             name=item["name"],

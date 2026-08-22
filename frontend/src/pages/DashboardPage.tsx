@@ -130,7 +130,7 @@ export function DashboardPage() {
             </div>
           ) : (
             <EmptyState eyebrow="No scan yet" title="Bring in your first volume">
-              <p>A scan reads new CBR and CBZ revisions without changing anything in Drive.</p>
+              <p>A scan reads new CBR, CBZ and PDF revisions without changing anything in Drive.</p>
             </EmptyState>
           )}
         </div>

@@ -58,6 +58,23 @@ class ArchiveMetadataError(ValueError):
     pass
 
 
+def open_pdf_document(path: Path):
+    """Open a PDF for inspection, rejecting anything KCC could not convert."""
+    import pymupdf
+
+    try:
+        document = pymupdf.open(path, filetype="pdf")
+    except (RuntimeError, ValueError) as error:
+        raise ArchiveMetadataError("The PDF is corrupt or unsupported") from error
+    if document.needs_pass:
+        document.close()
+        raise ArchiveMetadataError("The PDF is password-protected")
+    if document.page_count == 0:
+        document.close()
+        raise ArchiveMetadataError("The PDF contains no pages")
+    return document
+
+
 @dataclass(frozen=True)
 class ComicMetadata:
     title: str | None = None
@@ -139,6 +156,10 @@ def read_comic_metadata(path: Path) -> ComicMetadata:
         content = _read_cbz(path)
     elif extension == ".cbr":
         content = _read_cbr(path)
+    elif extension == ".pdf":
+        # PDFs carry no ComicInfo.xml; opening one only validates it for conversion.
+        open_pdf_document(path).close()
+        content = None
     else:
-        raise ArchiveMetadataError("Only CBR and CBZ archives are supported")
+        raise ArchiveMetadataError("Only CBR, CBZ and PDF files are supported")
     return _parse_comicinfo(content) if content else ComicMetadata()

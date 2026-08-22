@@ -460,6 +460,34 @@ def test_merged_batch_groups_selected_candidates_by_volume(tmp_path) -> None:
         assert statuses == {"queued"}
 
 
+def test_merged_batch_keeps_pdf_candidates_as_individual_jobs(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        session.add(AppSettings(id=1, kindle_email="reader@kindle.com"))
+        chapter = _seed_ready(session, "008 - Volume 02.cbr", "Naruto")
+        pdf = _seed_ready(session, "Naruto - Volume 02.pdf", "Naruto")
+        session.commit()
+
+    response = TestClient(app).post(
+        "/api/batches",
+        json={
+            "candidate_ids": [chapter, pdf],
+            "preset": PRESET,
+            "merge_by_volume": True,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["job_count"] == 2
+    with database.session() as session:
+        jobs = {job.title: job for job in session.scalars(select(Job))}
+        assert jobs["Naruto, Tome 02"].merged_candidate_ids == [chapter]
+        pdf_job = jobs["Naruto - Volume 02.pdf"]
+        assert pdf_job.candidate_id == pdf
+        assert pdf_job.merged_candidate_ids is None
+
+
 def test_retry_requeues_every_member_of_a_merged_job(tmp_path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'test.db'}")
     app = create_app(database)

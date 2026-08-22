@@ -637,3 +637,40 @@ def test_failed_probes_count_and_lead_to_a_resend(tmp_path: Path) -> None:
         assert job.status == "sent"
         assert delivery.status == "sent_unconfirmed"
         assert [attempt.status for attempt in delivery.attempts] == ["unverified", "sent"]
+
+
+def test_scan_accepts_pdf_revisions(tmp_path: Path, make_pdf) -> None:
+    source = tmp_path / "source.pdf"
+    make_pdf(source)
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    payload = source.read_bytes()
+
+    class PdfDrive(FakeDrive):
+        def walk_comics(self, _folder_id: str) -> list[DriveComic]:
+            return [
+                DriveComic(
+                    file_id="drive-1",
+                    name="Naruto v03.pdf",
+                    path="Manga/Naruto v03.pdf",
+                    size=len(payload),
+                    checksum=hashlib.md5(payload).hexdigest(),  # noqa: S324 - Drive supplies MD5
+                    modified_time="2026-08-22T10:00:00Z",
+                )
+            ]
+
+    with database.session() as session:
+        session.add(AppSettings(id=1, source_folder_id="root-folder"))
+        scan = Scan()
+        session.add(scan)
+        session.commit()
+        scan_id = scan.id
+
+    ScanProcessor(database, PdfDrive(source), tmp_path / "cache").run(scan_id)
+
+    with database.session() as session:
+        candidate = session.query(Candidate).one()
+        assert candidate.status == "ready"
+        assert candidate.resolved_title == "Naruto Vol. 3"
+        assert candidate.comic_metadata == {"title": None, "series": None, "number": None}
+        assert Path(candidate.cache_path).suffix == ".pdf"
+        assert Path(candidate.cache_path).exists()

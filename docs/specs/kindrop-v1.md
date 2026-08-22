@@ -2,13 +2,13 @@
 
 ## Goal
 
-Provide a free, personal, on-demand localhost application that converts new CBR/CBZ revisions from one recursively scanned `My Drive` folder into Kindle EPUB documents and sends them through the user's Gmail account.
+Provide a free, personal, on-demand localhost application that converts new CBR/CBZ/PDF revisions from one recursively scanned `My Drive` folder into Kindle EPUB documents and sends them through the user's Gmail account.
 
 ## Locked boundaries
 
 - One user, one Google account, one Drive source folder, one Kindle profile, and one Kindle destination.
 - Manual recursive scans; sources in Drive are always read-only.
-- CBR and CBZ input only; EPUB Send to Kindle output only.
+- CBR, CBZ and PDF input only; EPUB Send to Kindle output only.
 - Review is mandatory before a batch starts.
 - A Drive revision is identified by file ID and checksum, or by file ID, size, and modification time when no checksum exists.
 - `ComicInfo.xml` supplies metadata when present; the filename is the fallback and the user may override the title.

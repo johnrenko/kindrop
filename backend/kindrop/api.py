@@ -499,7 +499,12 @@ def create_app(
         volumes: dict[int, list[Candidate]] = {}
         singles: list[Candidate] = []
         for candidate in candidates:
-            volume = volume_number(candidate.revision.name) if payload.merge_by_volume else None
+            # A PDF is already a full volume; merging assumes image archives.
+            mergeable = (
+                payload.merge_by_volume
+                and not candidate.revision.name.lower().endswith(".pdf")
+            )
+            volume = volume_number(candidate.revision.name) if mergeable else None
             if volume is None:
                 singles.append(candidate)
             else:

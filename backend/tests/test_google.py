@@ -129,3 +129,46 @@ def test_find_sent_message_returns_none_when_absent() -> None:
     messages = FakeMessages(list_result={})
 
     assert gateway(messages).find_sent_message("<abc@kindrop.local>") is None
+
+
+class FakeDriveFiles:
+    def __init__(self, listings: dict[str, list[dict]]) -> None:
+        self.listings = listings
+
+    def list(self, **kwargs) -> FakeCall:
+        parent_id = kwargs["q"].split("'")[1]
+        return FakeCall({"files": self.listings[parent_id]})
+
+
+class FakeDriveFactory:
+    def __init__(self, files: FakeDriveFiles) -> None:
+        self._files = files
+
+    def drive(self) -> "FakeDriveFactory":
+        return self
+
+    def files(self) -> FakeDriveFiles:
+        return self._files
+
+
+def test_walk_comics_yields_cbr_cbz_and_pdf_files() -> None:
+    from kindrop.google import FOLDER_MIME_TYPE, GoogleDriveGateway
+
+    files = FakeDriveFiles(
+        {
+            "root": [
+                {"id": "sub", "name": "Sub", "mimeType": FOLDER_MIME_TYPE},
+                {"id": "c1", "name": "volume.CBZ", "size": "10", "modifiedTime": "t1"},
+                {"id": "c2", "name": "notes.txt", "size": "5", "modifiedTime": "t2"},
+            ],
+            "sub": [
+                {"id": "c3", "name": "volume.pdf", "size": "20", "modifiedTime": "t3"},
+                {"id": "c4", "name": "chapter.cbr", "size": "30", "modifiedTime": "t4"},
+            ],
+        }
+    )
+
+    comics = list(GoogleDriveGateway(FakeDriveFactory(files)).walk_comics("root"))
+
+    assert [comic.name for comic in comics] == ["volume.CBZ", "volume.pdf", "chapter.cbr"]
+    assert comics[1].path == "Sub/volume.pdf"

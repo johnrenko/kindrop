@@ -1,6 +1,6 @@
 # Kindrop
 
-Kindrop is a personal, local-only web app that turns new CBR/CBZ revisions in one Google Drive folder into Kindle-ready EPUB files. It uses Kindle Comic Converter (KCC), sends one EPUB per Gmail message, and watches Amazon replies for verification requests or documented rejection codes.
+Kindrop is a personal, local-only web app that turns new CBR/CBZ/PDF revisions in one Google Drive folder into Kindle-ready EPUB files. It uses Kindle Comic Converter (KCC), sends one EPUB per Gmail message, and watches Amazon replies for verification requests or documented rejection codes.
 
 Kindrop never modifies the source files in Drive. The application listens only on `127.0.0.1:8787` and has no application login because it is designed for a single user on one trusted computer.
 
@@ -62,6 +62,6 @@ The frontend development server proxies `/api` to `127.0.0.1:8787`.
 
 ## Safety boundaries
 
-Kindrop accepts `My Drive` folders only, reads CBR/CBZ archives without writing back to Drive, validates `ComicInfo.xml` without extracting arbitrary archive paths, rejects artifacts above 20 MiB, and follows verification links only over HTTPS on approved Amazon domains without an off-domain redirect.
+Kindrop accepts `My Drive` folders only, reads CBR/CBZ archives and PDF files without writing back to Drive, validates `ComicInfo.xml` without extracting arbitrary archive paths, rejects artifacts above 20 MiB, and follows verification links only over HTTPS on approved Amazon domains without an off-domain redirect.
 
 The first release is intentionally limited to one Google account, one Kindle destination, manual scans, and a single sequential worker. See [CONTEXT.md](CONTEXT.md) and the [architecture decisions](docs/adr/) for the product boundaries.

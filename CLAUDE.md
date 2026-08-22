@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What Kindrop is
 
-A personal, local-only web app that converts new CBR/CBZ revisions from one Google Drive folder into Kindle-ready EPUBs (via Kindle Comic Converter), emails one EPUB per Gmail message to a Send-to-Kindle address, and reconciles Amazon's reply emails. Single user, no login, binds to `127.0.0.1:8787` only. It never writes back to Drive.
+A personal, local-only web app that converts new CBR/CBZ/PDF revisions from one Google Drive folder into Kindle-ready EPUBs (via Kindle Comic Converter), emails one EPUB per Gmail message to a Send-to-Kindle address, and reconciles Amazon's reply emails. Single user, no login, binds to `127.0.0.1:8787` only. It never writes back to Drive.
 
 `CONTEXT.md` defines the ubiquitous language (Source Folder, Scan, Candidate, Conversion Batch/Job/Preset, Artifact, Delivery, Kindle Destination) **including terms to avoid** — use these exact terms in code, UI, and docs. Product requirements live in `docs/specs/kindrop-v1.md` (no external issue tracker); design boundaries are in `docs/adr/`.
 

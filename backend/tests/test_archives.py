@@ -104,3 +104,11 @@ def test_build_volume_archive_orders_chapters(tmp_path: Path) -> None:
         "002/nested-009-02.jpg",
     ]
     assert not (workdir / "merged").exists()
+
+
+def test_extract_archive_images_refuses_pdf_sources(tmp_path: Path) -> None:
+    pdf = tmp_path / "Naruto - Volume 02.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+
+    with pytest.raises(ArchiveExtractionError, match="cannot be merged"):
+        extract_archive_images(pdf, tmp_path / "out")

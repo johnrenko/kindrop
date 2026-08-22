@@ -2,11 +2,17 @@ import io
 from xml.etree import ElementTree
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
+import pytest
 from PIL import Image
 
 from kindrop.anilist import parse_search_response
 from kindrop.epub import OPF_NS, apply_epub_metadata
-from kindrop.metadata import format_kindle_title
+from kindrop.metadata import (
+    ArchiveMetadataError,
+    ComicMetadata,
+    format_kindle_title,
+    read_comic_metadata,
+)
 
 
 def test_format_kindle_title_groups_volumes_under_the_series() -> None:
@@ -16,6 +22,29 @@ def test_format_kindle_title_groups_volumes_under_the_series() -> None:
     assert format_kindle_title("One Piece", "Omnibus 1", "fallback") == "One Piece, Omnibus 1"
     assert format_kindle_title(None, "3", "fallback") == "fallback"
     assert format_kindle_title("  ", None, "fallback") == "fallback"
+
+
+def test_read_comic_metadata_accepts_a_pdf_without_comicinfo(tmp_path, make_pdf) -> None:
+    pdf = tmp_path / "Naruto v03.pdf"
+    make_pdf(pdf)
+
+    assert read_comic_metadata(pdf) == ComicMetadata()
+
+
+def test_read_comic_metadata_rejects_a_corrupt_pdf(tmp_path) -> None:
+    pdf = tmp_path / "broken.pdf"
+    pdf.write_bytes(b"not a pdf at all")
+
+    with pytest.raises(ArchiveMetadataError, match="corrupt or unsupported"):
+        read_comic_metadata(pdf)
+
+
+def test_read_comic_metadata_rejects_a_password_protected_pdf(tmp_path, make_pdf) -> None:
+    pdf = tmp_path / "locked.pdf"
+    make_pdf(pdf, password="secret")
+
+    with pytest.raises(ArchiveMetadataError, match="password-protected"):
+        read_comic_metadata(pdf)
 
 
 def _image_bytes(color: str, format: str = "JPEG") -> bytes:

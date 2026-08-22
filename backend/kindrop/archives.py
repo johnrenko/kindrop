@@ -38,6 +38,8 @@ def extract_archive_images(archive: Path, destination: Path) -> int:
     7z first, then unrar — the RAR method used by many CBR releases is not
     supported by p7zip but is by unrar, so the fallback is load-bearing.
     """
+    if archive.suffix.lower() == ".pdf":
+        raise ArchiveExtractionError(f"{archive.name} is a PDF and cannot be merged into a volume")
     staging = destination / ".staging"
     staging.mkdir(parents=True, exist_ok=True)
     extracted = (

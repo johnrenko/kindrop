@@ -2,6 +2,9 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+# Input formats accepted from the Source Folder; KCC converts all three natively.
+COMIC_SUFFIXES = frozenset({".cbr", ".cbz", ".pdf"})
+
 
 class ReadingDirection(StrEnum):
     RTL = "rtl"
