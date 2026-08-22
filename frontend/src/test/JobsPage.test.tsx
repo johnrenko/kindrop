@@ -89,6 +89,26 @@ describe("Jobs", () => {
     );
   });
 
+  it("keeps simple retry as the primary job action", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      if (init?.method === "POST") return Response.json({ id: "job-2", status: "queued" });
+      return Response.json([job]);
+    });
+    renderJobs();
+
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Retry with different settings" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/jobs/job-1/retry",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ preset: job.preset }),
+      }),
+    );
+  });
+
   it("queues a sent job again with corrected conversion settings", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       if (input === "/api/kindle-profiles") {
@@ -102,8 +122,11 @@ describe("Jobs", () => {
     });
     renderJobs();
 
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Retry with different settings" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "More retry options for Naruto, Ch. 700" }));
     await userEvent.click(
-      await screen.findByRole("button", { name: "Retry with different settings" }),
+      screen.getByRole("menuitem", { name: "Retry with different settings" }),
     );
     expect(screen.getByRole("dialog", { name: "Convert and send again" })).toBeInTheDocument();
     expect(screen.getByText(/earlier Kindle copy is not removed/i)).toBeInTheDocument();

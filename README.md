@@ -31,7 +31,7 @@ For the Google project steps, see [docs/google-cloud-setup.md](docs/google-cloud
 - OAuth material is encrypted with `secrets/kindrop.key`, mounted read-only. Back up this file together with the data volume. Losing it makes stored Google credentials unreadable.
 - Every Gmail send start is separated by at least 60 seconds. Confirmed throttling is retried up to three times. An uncertain response becomes a transient **Unknown**: Kindrop checks Gmail's Sent folder and resends automatically if the message never left (three sends at most, Kindle-side duplicates accepted). A delivery that can never be confirmed becomes **Failed** with the reason shown.
 - A sent item remains **Sent — unconfirmed** unless Amazon asks for verification or reports a rejection. Kindrop does not claim positive Kindle delivery.
-- A terminal Conversion Job can be retried from History with corrected conversion settings. Kindrop creates a new job and warns before sending another Kindle copy; it cannot remove the copy already sent.
+- A terminal Conversion Job can be retried directly from History with the same settings, or retried with corrected settings from its `…` menu. Kindrop creates a new job and warns before sending another Kindle copy; it cannot remove the copy already sent.
 
 Stop the services with `docker compose down`. Add `-v` only if you intentionally want to delete Kindrop's database and cache volumes.
 

@@ -191,6 +191,11 @@
   .job-entry__heading h2 { margin-bottom: .3rem; }
   .job-entry__heading p { color: var(--muted); font-size: .75rem; }
   .job-entry__actions { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1.2rem 0; }
+  .retry-menu { position: relative; }
+  .retry-menu__trigger { width: 44px; padding-inline: 0; }
+  .retry-menu__popover { position: absolute; z-index: 8; top: calc(100% + .35rem); right: 0; min-width: 220px; padding: .3rem; border: 1px solid var(--ink); background: var(--paper); box-shadow: var(--shadow); }
+  .retry-menu__popover button { width: 100%; padding: .7rem .8rem; border: 0; background: transparent; color: var(--ink); cursor: pointer; text-align: left; }
+  .retry-menu__popover button:hover, .retry-menu__popover button:focus-visible { background: var(--paper-deep); }
   .status-filters { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 2.2rem; }
   .filter-chip { display: inline-flex; align-items: center; gap: .45rem; padding: .42rem .8rem; border: 1px solid var(--line); background: transparent; color: var(--muted); font: inherit; font-size: .8rem; font-weight: 650; cursor: pointer; transition: border-color 140ms ease, color 140ms ease, background 140ms ease; }
   .filter-chip:hover:not(.filter-chip--active) { border-color: var(--ink); color: var(--ink); }

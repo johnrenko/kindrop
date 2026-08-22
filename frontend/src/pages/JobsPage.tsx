@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Ban, Loader2, RotateCcw } from "lucide-react";
+import { AlertTriangle, Ban, Loader2, MoreHorizontal, RotateCcw } from "lucide-react";
 
 import { api } from "../api";
 import { EmptyState } from "../components/EmptyState";
@@ -18,6 +18,7 @@ export function JobsPage() {
   const client = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [retryTarget, setRetryTarget] = useState<Job | null>(null);
+  const [retryMenuJobId, setRetryMenuJobId] = useState<string | null>(null);
   const jobs = useQuery({ queryKey: queryKeys.jobs, queryFn: api.jobs, refetchInterval: 5_000 });
   const profiles = useQuery({
     queryKey: queryKeys.profiles,
@@ -29,6 +30,7 @@ export function JobsPage() {
       api.retryJob(id, preset),
     onSuccess: async () => {
       setRetryTarget(null);
+      setRetryMenuJobId(null);
       await client.invalidateQueries({ queryKey: queryKeys.jobs });
     },
   });
@@ -135,15 +137,40 @@ export function JobsPage() {
                       </ol>
                     )}
                     {(["sent", "failed", "cancelled"].includes(job.status)) && (
-                      <button
-                        className="button button--secondary"
-                        onClick={() => {
-                          retry.reset();
-                          setRetryTarget(job);
-                        }}
-                      >
-                        <RotateCcw size={16} /> Retry with different settings
-                      </button>
+                      <div className="job-entry__actions">
+                        <button
+                          className="button button--secondary"
+                          onClick={() => retry.mutate({ id: job.id, preset: job.preset })}
+                          disabled={retry.isPending}
+                        >
+                          <RotateCcw size={16} /> Retry
+                        </button>
+                        <div className="retry-menu">
+                          <button
+                            className="button button--secondary retry-menu__trigger"
+                            aria-label={`More retry options for ${job.title}`}
+                            aria-haspopup="menu"
+                            aria-expanded={retryMenuJobId === job.id}
+                            onClick={() => setRetryMenuJobId((current) => current === job.id ? null : job.id)}
+                          >
+                            <MoreHorizontal size={18} />
+                          </button>
+                          {retryMenuJobId === job.id && (
+                            <div className="retry-menu__popover" role="menu">
+                              <button
+                                role="menuitem"
+                                onClick={() => {
+                                  retry.reset();
+                                  setRetryMenuJobId(null);
+                                  setRetryTarget(job);
+                                }}
+                              >
+                                Retry with different settings
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     )}
                     {job.status === "queued" && (
                       <button className="button button--secondary" onClick={() => cancel.mutate(job.id)} disabled={cancel.isPending}>
