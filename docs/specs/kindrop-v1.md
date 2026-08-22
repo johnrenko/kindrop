@@ -19,7 +19,7 @@ Provide a free, personal, on-demand localhost application that converts new CBR/
 
 ## User journeys
 
-The Settings page guides OAuth client upload, Google connection, My Drive folder selection, Kindle destination/profile setup, and cache clearing. The Desk starts scans and shows progress. Review selects and edits candidates before creating a batch. History shows conversion state, every EPUB part, Amazon state, and explicit recovery actions.
+The Settings page guides OAuth client upload, Google connection, My Drive folder selection, Kindle destination/profile setup, and cache clearing. The Desk starts scans and shows progress. Review selects and edits candidates before creating a batch. History shows conversion state, every EPUB part, Amazon state, and explicit recovery actions. A terminal Conversion Job, including a sent one, can be queued again with an edited Conversion Preset; this creates a separate history entry and warns that a previous Kindle copy cannot be removed.
 
 ## Operational states
 

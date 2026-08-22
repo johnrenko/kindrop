@@ -76,6 +76,7 @@ export interface Job {
   batch_id: string;
   status: string;
   title: string;
+  preset: ConversionPreset;
   merged_count: number | null;
   progress: number;
   error: string | null;
@@ -103,4 +104,3 @@ export interface KindleProfile {
   id: string;
   name: string;
 }
-

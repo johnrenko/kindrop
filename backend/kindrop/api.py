@@ -67,6 +67,10 @@ class BatchCreate(BaseModel):
     merge_by_volume: bool = False
 
 
+class JobRetry(BaseModel):
+    preset: ConversionPreset
+
+
 class BatchResponse(BaseModel):
     id: str
     status: str
@@ -124,6 +128,7 @@ def _job_read(job: Job) -> JobRead:
         batch_id=job.batch_id,
         status=job.status,
         title=job.title,
+        preset=ConversionPreset.model_validate(job.preset),
         merged_count=len(job.merged_candidate_ids) if job.merged_candidate_ids else None,
         progress=job.progress,
         error=job.error,
@@ -558,17 +563,33 @@ def create_app(
         ).all()
         return [_job_read(job) for job in jobs]
 
-    def clone_job(source_job: Job, session: Session) -> Job:
-        batch = Batch(preset=source_job.preset)
+    def clone_job(
+        source_job: Job,
+        session: Session,
+        preset: ConversionPreset | None = None,
+    ) -> Job:
+        member_ids = set(source_job.merged_candidate_ids or [source_job.candidate_id])
+        active_jobs = session.scalars(
+            select(Job).where(Job.status.not_in(["sent", "failed", "cancelled"]))
+        ).all()
+        if any(
+            member_ids.intersection(active.merged_candidate_ids or [active.candidate_id])
+            for active in active_jobs
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="A Conversion Job for this Candidate is already active",
+            )
+        preset_snapshot = preset.model_dump(mode="json") if preset else source_job.preset
+        batch = Batch(preset=preset_snapshot)
         session.add(batch)
         session.flush()
-        member_ids = source_job.merged_candidate_ids or [source_job.candidate_id]
         for member in session.scalars(select(Candidate).where(Candidate.id.in_(member_ids))):
             member.status = "queued"
         replacement = Job(
             batch_id=batch.id,
             candidate_id=source_job.candidate_id,
-            preset=source_job.preset,
+            preset=preset_snapshot,
             title=source_job.title,
             merged_candidate_ids=source_job.merged_candidate_ids,
         )
@@ -577,17 +598,21 @@ def create_app(
         return replacement
 
     @app.post("/api/jobs/{job_id}/retry", status_code=status.HTTP_201_CREATED)
-    def retry_job(job_id: str, session: Session = Depends(session_dependency)) -> dict[str, str]:
+    def retry_job(
+        job_id: str,
+        payload: JobRetry | None = None,
+        session: Session = Depends(session_dependency),
+    ) -> dict[str, str]:
         job = session.scalar(
             select(Job).options(selectinload(Job.candidate)).where(Job.id == job_id)
         )
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
-        if job.status not in {"failed", "cancelled"}:
+        if job.status not in {"sent", "failed", "cancelled"}:
             raise HTTPException(
-                status_code=409, detail="Only failed or cancelled jobs can be retried"
+                status_code=409, detail="Only terminal jobs can be retried"
             )
-        replacement = clone_job(job, session)
+        replacement = clone_job(job, session, payload.preset if payload else None)
         return {"id": replacement.id, "status": replacement.status}
 
     @app.post("/api/jobs/{job_id}/cancel")

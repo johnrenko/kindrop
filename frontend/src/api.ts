@@ -61,7 +61,11 @@ export const api = {
       }),
     }),
   jobs: () => request<Job[]>("/api/jobs"),
-  retryJob: (id: string) => request(`/api/jobs/${id}/retry`, { method: "POST" }),
+  retryJob: (id: string, preset: ConversionPreset) =>
+    request(`/api/jobs/${id}/retry`, {
+      method: "POST",
+      body: JSON.stringify({ preset }),
+    }),
   cancelJob: (id: string) => request(`/api/jobs/${id}/cancel`, { method: "POST" }),
   resendDelivery: (id: string) =>
     request(`/api/deliveries/${id}/resend`, { method: "POST" }),

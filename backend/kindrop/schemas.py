@@ -101,6 +101,7 @@ class JobRead(BaseModel):
     batch_id: str
     status: str
     title: str
+    preset: ConversionPreset
     merged_count: int | None = None
     progress: int
     error: str | None

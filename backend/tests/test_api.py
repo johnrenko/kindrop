@@ -519,6 +519,83 @@ def test_retry_requeues_every_member_of_a_merged_job(tmp_path) -> None:
         assert statuses == {"queued"}
 
 
+def test_sent_job_can_be_retried_with_a_corrected_preset(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        candidate_id = _seed_ready(session, "volume.cbz")
+        batch = Batch(preset=PRESET, status="completed")
+        session.add(batch)
+        session.flush()
+        job = Job(
+            batch_id=batch.id,
+            candidate_id=candidate_id,
+            status="sent",
+            preset=PRESET,
+            title="Volume",
+        )
+        session.add(job)
+        session.commit()
+        job_id = job.id
+
+    corrected_preset = {
+        **PRESET,
+        "reading_direction": "ltr",
+        "crop_mode": "none",
+    }
+    response = TestClient(app).post(
+        f"/api/jobs/{job_id}/retry",
+        json={"preset": corrected_preset},
+    )
+
+    assert response.status_code == 201
+    jobs = TestClient(app).get("/api/jobs").json()
+    replacement = next(job for job in jobs if job["id"] == response.json()["id"])
+    original = next(job for job in jobs if job["id"] == job_id)
+    assert replacement["status"] == "queued"
+    assert replacement["preset"] == corrected_preset
+    assert original["status"] == "sent"
+    assert original["preset"] == PRESET
+
+
+def test_retry_rejects_a_candidate_that_already_has_an_active_job(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        candidate_id = _seed_ready(session, "volume.cbz")
+        previous_batch = Batch(preset=PRESET, status="completed")
+        active_batch = Batch(preset=PRESET, status="processing")
+        session.add_all([previous_batch, active_batch])
+        session.flush()
+        previous = Job(
+            batch_id=previous_batch.id,
+            candidate_id=candidate_id,
+            status="sent",
+            preset=PRESET,
+            title="Volume",
+        )
+        session.add(previous)
+        session.add(
+            Job(
+                batch_id=active_batch.id,
+                candidate_id=candidate_id,
+                status="queued",
+                preset=PRESET,
+                title="Volume",
+            )
+        )
+        session.commit()
+        previous_id = previous.id
+
+    response = TestClient(app).post(
+        f"/api/jobs/{previous_id}/retry",
+        json={"preset": PRESET},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "A Conversion Job for this Candidate is already active"
+
+
 def test_cancel_queued_merged_job_restores_candidates_and_completes_batch(tmp_path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'test.db'}")
     app = create_app(database)

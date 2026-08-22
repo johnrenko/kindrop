@@ -205,6 +205,15 @@
   .notice--verifying .spin { animation: verify-spin 1.6s linear infinite; color: var(--amber); }
   @keyframes verify-spin { to { transform: rotate(360deg); } }
   .error-code { padding: .35rem .5rem; background: oklch(49% 0.18 28 / 9%); color: var(--red); font-family: ui-monospace, monospace; }
+  .retry-dialog-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 1rem; background: oklch(24% 0.026 45 / 42%); }
+  .retry-dialog { width: min(100%, 580px); max-height: calc(100vh - 2rem); overflow-y: auto; padding: clamp(1.5rem, 4vw, 2.5rem); border: 1px solid var(--ink); background: var(--paper); box-shadow: var(--shadow); }
+  .retry-dialog > p { color: var(--muted); line-height: 1.5; }
+  .retry-dialog .notice--warning { padding: .8rem 1rem; border-left: 3px solid var(--amber); background: oklch(57% 0.13 72 / 9%); color: var(--ink); }
+  .retry-dialog__form { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.4rem; }
+  .retry-dialog__form label { display: grid; gap: .4rem; color: var(--muted); font-size: .72rem; font-weight: 650; }
+  .retry-dialog__form select { padding: .65rem .75rem; }
+  .retry-dialog__form .form-error, .retry-dialog__actions { grid-column: 1 / -1; }
+  .retry-dialog__actions { display: flex; justify-content: flex-end; gap: .6rem; margin-top: .5rem; }
   .settings-sections { border-top: 1px solid var(--ink); }
   .settings-section { display: grid; grid-template-columns: minmax(180px, .45fr) minmax(0, 1fr); gap: 3rem; padding: 2.5rem 0; border-bottom: 1px solid var(--line); }
   .settings-section__intro p { color: var(--muted); line-height: 1.55; }
@@ -269,6 +278,8 @@
     .job-entry__heading { display: block; }
     .delivery-list li { grid-template-columns: 1fr; }
     .form-pair { grid-template-columns: 1fr; }
+    .retry-dialog__form { grid-template-columns: 1fr; }
+    .retry-dialog__form .form-error, .retry-dialog__actions { grid-column: auto; }
   }
 
   @media (prefers-reduced-motion: reduce) {

@@ -8,7 +8,7 @@ import { Progress } from "../components/Progress";
 import { StatusBadge } from "../components/StatusBadge";
 import { queryKeys } from "../query";
 import { statusLabels } from "../statusLabels";
-import type { Job } from "../types";
+import type { ConversionPreset, Job, KindleProfile } from "../types";
 
 function jobMatchesStatus(job: Job, status: string) {
   return job.status === status || job.deliveries.some((delivery) => delivery.status === status);
@@ -17,10 +17,20 @@ function jobMatchesStatus(job: Job, status: string) {
 export function JobsPage() {
   const client = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
+  const [retryTarget, setRetryTarget] = useState<Job | null>(null);
   const jobs = useQuery({ queryKey: queryKeys.jobs, queryFn: api.jobs, refetchInterval: 5_000 });
+  const profiles = useQuery({
+    queryKey: queryKeys.profiles,
+    queryFn: api.profiles,
+    enabled: retryTarget !== null,
+  });
   const retry = useMutation({
-    mutationFn: api.retryJob,
-    onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.jobs }),
+    mutationFn: ({ id, preset }: { id: string; preset: ConversionPreset }) =>
+      api.retryJob(id, preset),
+    onSuccess: async () => {
+      setRetryTarget(null);
+      await client.invalidateQueries({ queryKey: queryKeys.jobs });
+    },
   });
   const cancel = useMutation({
     mutationFn: api.cancelJob,
@@ -116,7 +126,7 @@ export function JobsPage() {
                                   onClick={() => resend.mutate(delivery.id)}
                                   disabled={resend.isPending}
                                 >
-                                  <RotateCcw size={16} /> Resend as a new job
+                                  <RotateCcw size={16} /> Resend with same settings
                                 </button>
                               </div>
                             )}
@@ -124,9 +134,15 @@ export function JobsPage() {
                         ))}
                       </ol>
                     )}
-                    {(["failed", "cancelled"].includes(job.status)) && (
-                      <button className="button button--secondary" onClick={() => retry.mutate(job.id)} disabled={retry.isPending}>
-                        <RotateCcw size={16} /> Retry as a new job
+                    {(["sent", "failed", "cancelled"].includes(job.status)) && (
+                      <button
+                        className="button button--secondary"
+                        onClick={() => {
+                          retry.reset();
+                          setRetryTarget(job);
+                        }}
+                      >
+                        <RotateCcw size={16} /> Retry with different settings
                       </button>
                     )}
                     {job.status === "queued" && (
@@ -139,8 +155,115 @@ export function JobsPage() {
               ))}
             </ol>
           )}
+          {retryTarget && (
+            <RetryJobDialog
+              key={retryTarget.id}
+              job={retryTarget}
+              profiles={profiles.data ?? []}
+              pending={retry.isPending}
+              error={retry.error?.message ?? null}
+              onCancel={() => setRetryTarget(null)}
+              onSubmit={(preset) => retry.mutate({ id: retryTarget.id, preset })}
+            />
+          )}
         </>
       )}
+    </div>
+  );
+}
+
+function RetryJobDialog({
+  job,
+  profiles,
+  pending,
+  error,
+  onCancel,
+  onSubmit,
+}: {
+  job: Job;
+  profiles: KindleProfile[];
+  pending: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onSubmit: (preset: ConversionPreset) => void;
+}) {
+  const [preset, setPreset] = useState<ConversionPreset>({ ...job.preset });
+  const availableProfiles = profiles.some((profile) => profile.id === preset.kindle_profile)
+    ? profiles
+    : [{ id: preset.kindle_profile, name: preset.kindle_profile }, ...profiles];
+
+  return (
+    <div className="retry-dialog-backdrop">
+      <section
+        className="retry-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="retry-dialog-title"
+      >
+        <span className="eyebrow">Correct a conversion</span>
+        <h2 id="retry-dialog-title">Convert and send again</h2>
+        <p><strong>{job.title}</strong> will be converted into a new EPUB with these settings.</p>
+        {job.status === "sent" && (
+          <p className="notice notice--warning">
+            The earlier Kindle copy is not removed. This will send another copy after conversion.
+          </p>
+        )}
+        <form
+          className="retry-dialog__form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSubmit(preset);
+          }}
+        >
+          <label>Kindle profile
+            <select
+              autoFocus
+              value={preset.kindle_profile}
+              onChange={(event) => setPreset({ ...preset, kindle_profile: event.target.value })}
+            >
+              {availableProfiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>{profile.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>Reading direction
+            <select
+              value={preset.reading_direction}
+              onChange={(event) => setPreset({ ...preset, reading_direction: event.target.value as ConversionPreset["reading_direction"] })}
+            >
+              <option value="rtl">Right to left</option>
+              <option value="ltr">Left to right</option>
+            </select>
+          </label>
+          <label>Double-page spreads
+            <select
+              value={preset.spread_mode}
+              onChange={(event) => setPreset({ ...preset, spread_mode: event.target.value as ConversionPreset["spread_mode"] })}
+            >
+              <option value="both">Split + rotate</option>
+              <option value="split">Split</option>
+              <option value="rotate">Rotate</option>
+            </select>
+          </label>
+          <label>Crop behavior
+            <select
+              value={preset.crop_mode}
+              onChange={(event) => setPreset({ ...preset, crop_mode: event.target.value as ConversionPreset["crop_mode"] })}
+            >
+              <option value="margins_and_page_numbers">Margins + page numbers</option>
+              <option value="margins">Margins only</option>
+              <option value="none">Do not crop</option>
+            </select>
+          </label>
+          {error && <p className="form-error">{error}</p>}
+          <div className="retry-dialog__actions">
+            <button type="button" className="button button--secondary" onClick={onCancel} disabled={pending}>Cancel</button>
+            <button type="submit" className="button button--primary" disabled={pending}>
+              <RotateCcw size={16} /> {pending ? "Queueing…" : "Queue corrected job"}
+            </button>
+          </div>
+        </form>
+      </section>
     </div>
   );
 }
