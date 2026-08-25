@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import shutil
 import time
 from collections.abc import Callable, Iterable
@@ -36,6 +37,8 @@ from .models import (
     Revision,
     Scan,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_EPUB_BYTES = 20 * 1024 * 1024
 CACHE_TTL = timedelta(hours=24)
@@ -170,7 +173,12 @@ class ScanProcessor:
             scan.discovered_count = already_processed + len(new_comics)
             session.commit()
 
-        self._reconcile_library(comics)
+        try:
+            self._reconcile_library(comics)
+        except Exception:
+            # Mirror convergence is best-effort per scan: a persistent unlink or DB
+            # error here must not crash-loop the worker.
+            logger.exception("Library mirror reconciliation failed for scan %s", scan_id)
 
         scan_directory = self.cache_root / "scans" / scan_id
         scan_directory.mkdir(parents=True, exist_ok=True)
@@ -295,15 +303,39 @@ class ScanProcessor:
             tracked_revision_ids = set()
             for item in tracked:
                 tracked_revision_ids.add(item.revision_id)
+                fingerprint = item.revision.fingerprint
                 if item.status == "removed":
+                    # The file reappeared in the Source Folder (same fingerprint):
+                    # give it another chance to mirror.
+                    if fingerprint in present:
+                        item.status = "pending"
+                        item.error = None
+                        add_event(
+                            session, "library", item.id, "library.file_requeued", title=item.title
+                        )
                     continue
-                if item.revision.fingerprint not in present:
+                if fingerprint not in present:
                     if item.path:
                         (self.cache_root / item.path).unlink(missing_ok=True)
                     item.status = "removed"
                     item.path = None
                     add_event(
                         session, "library", item.id, "library.file_removed", title=item.title
+                    )
+                    continue
+                # Self-heal: a `ready` item whose mirrored file vanished from disk
+                # (e.g. a partial cache purge, or an out-of-band deletion) gets
+                # requeued so the next mirror pass restores it.
+                if (
+                    item.status == "ready"
+                    and item.path
+                    and not (self.cache_root / item.path).exists()
+                ):
+                    item.status = "pending"
+                    item.path = None
+                    item.error = None
+                    add_event(
+                        session, "library", item.id, "library.file_requeued", title=item.title
                     )
             # Backfill: revisions scanned before the Catalog existed get a Library File
             # as long as their file is still in the Source Folder.

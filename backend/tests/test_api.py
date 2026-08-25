@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from kindrop.api import create_app
+from kindrop.config import RuntimeSettings
 from kindrop.database import Database
 from kindrop.models import (
     AppSettings,
@@ -696,6 +697,54 @@ def test_clear_history_handles_every_member_of_a_merged_job(tmp_path) -> None:
     with database.session() as session:
         assert session.scalars(select(Candidate)).first() is None
         assert {revision.status for revision in session.scalars(select(Revision))} == {"sent"}
+
+
+def test_purge_cache_keeps_the_library_mirror_but_clears_everything_else(tmp_path) -> None:
+    cache_root = tmp_path / "cache"
+    runtime = RuntimeSettings(cache_root=cache_root)
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database, runtime)
+
+    mirrored_file = cache_root / "library" / "Naruto" / "Naruto, Ch. 700.cbz"
+    mirrored_file.parent.mkdir(parents=True)
+    mirrored_file.write_bytes(b"mirrored")
+    workdir_file = cache_root / "library-work" / "abc123" / "download.tmp"
+    workdir_file.parent.mkdir(parents=True)
+    workdir_file.write_bytes(b"in-progress")
+    scan_file = cache_root / "scans" / "scan-1" / "volume.cbz"
+    scan_file.parent.mkdir(parents=True)
+    scan_file.write_bytes(b"scratch")
+
+    with database.session() as session:
+        revision = Revision(
+            drive_file_id="drive-1",
+            fingerprint="drive-1:md5:abc",
+            name="volume.cbz",
+            path="Manga/volume.cbz",
+            size=123,
+            status="candidate",
+        )
+        session.add(revision)
+        session.flush()
+        session.add(
+            Candidate(
+                revision_id=revision.id,
+                status="ready",
+                resolved_title="Volume 1",
+                cache_path=str(scan_file),
+            )
+        )
+        session.commit()
+
+    response = TestClient(app).delete("/api/cache")
+
+    assert response.status_code == 204
+    assert mirrored_file.exists()
+    assert workdir_file.exists()
+    assert not scan_file.exists()
+    with database.session() as session:
+        candidate = session.scalars(select(Candidate)).one()
+        assert candidate.cache_path is None
 
 
 def test_library_file_persists_with_defaults(tmp_path) -> None:

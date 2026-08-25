@@ -761,3 +761,96 @@ def test_scan_backfills_and_removes_library_files_to_match_drive(tmp_path: Path)
         )
         assert removed.status == "removed"
     assert not gone_file.exists()
+
+
+def test_scan_requeues_a_removed_library_file_once_it_reappears_on_drive(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    archive = tmp_path / "Naruto c700.cbz"
+    make_cbz(archive)
+    drive = FakeDrive(archive)
+    comic = drive.walk_comics("folder")[0]
+    fingerprint = revision_fingerprint(
+        comic.file_id, comic.checksum, comic.size, comic.modified_time
+    )
+    with database.session() as session:
+        session.add(AppSettings(id=1, source_folder_id="folder"))
+        revision = Revision(
+            drive_file_id=comic.file_id,
+            fingerprint=fingerprint,
+            name=comic.name,
+            path=comic.path,
+            size=comic.size,
+            modified_time=comic.modified_time,
+            status="sent",
+        )
+        session.add(revision)
+        session.flush()
+        session.add(
+            LibraryFile(
+                revision_id=revision.id,
+                title="Naruto, Ch. 700",
+                series="Naruto",
+                status="removed",
+                error="Removed from the Source Folder",
+            )
+        )
+        scan = Scan()
+        session.add(scan)
+        session.commit()
+        scan_id = scan.id
+        revision_id = revision.id
+
+    # The file is back in the Source Folder with the exact same fingerprint.
+    ScanProcessor(database, drive, tmp_path / "cache").run(scan_id)
+
+    with database.session() as session:
+        item = session.scalar(select(LibraryFile).where(LibraryFile.revision_id == revision_id))
+        assert item.status == "pending"
+        assert item.error is None
+
+
+def test_scan_requeues_a_ready_library_file_whose_mirrored_copy_vanished(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    archive = tmp_path / "Naruto c700.cbz"
+    make_cbz(archive)
+    drive = FakeDrive(archive)
+    comic = drive.walk_comics("folder")[0]
+    fingerprint = revision_fingerprint(
+        comic.file_id, comic.checksum, comic.size, comic.modified_time
+    )
+    with database.session() as session:
+        session.add(AppSettings(id=1, source_folder_id="folder"))
+        revision = Revision(
+            drive_file_id=comic.file_id,
+            fingerprint=fingerprint,
+            name=comic.name,
+            path=comic.path,
+            size=comic.size,
+            modified_time=comic.modified_time,
+            status="sent",
+        )
+        session.add(revision)
+        session.flush()
+        session.add(
+            LibraryFile(
+                revision_id=revision.id,
+                title="Naruto, Ch. 700",
+                series="Naruto",
+                status="ready",
+                path="library/Naruto/Naruto, Ch. 700.cbz",
+            )
+        )
+        scan = Scan()
+        session.add(scan)
+        session.commit()
+        scan_id = scan.id
+        revision_id = revision.id
+
+    # No file exists at cache_root/library/... — a partial purge or an
+    # out-of-band deletion. The next scan must self-heal it.
+    ScanProcessor(database, drive, tmp_path / "cache").run(scan_id)
+
+    with database.session() as session:
+        item = session.scalar(select(LibraryFile).where(LibraryFile.revision_id == revision_id))
+        assert item.status == "pending"
+        assert item.path is None

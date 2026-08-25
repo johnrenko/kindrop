@@ -705,7 +705,12 @@ def create_app(
 
     @app.delete("/api/cache", status_code=status.HTTP_204_NO_CONTENT)
     def purge_cache(session: Session = Depends(session_dependency)) -> Response:
+        # The Library mirror (and its in-progress work directory) is not
+        # temporary cache: it is the Catalog's data. Never purge it here.
+        preserved = {"library", "library-work"}
         for child in runtime.cache_root.iterdir() if runtime.cache_root.exists() else []:
+            if child.name in preserved:
+                continue
             if child.is_dir():
                 shutil.rmtree(child, ignore_errors=True)
             else:
