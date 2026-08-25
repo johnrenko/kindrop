@@ -2,9 +2,11 @@ import hashlib
 from pathlib import Path
 from zipfile import ZipFile
 
+from sqlalchemy import select
+
 from kindrop.database import Database
-from kindrop.domain import ConversionPreset
-from kindrop.models import AppSettings, Batch, Candidate, Job, Revision, Scan
+from kindrop.domain import ConversionPreset, revision_fingerprint
+from kindrop.models import AppSettings, Batch, Candidate, Job, LibraryFile, Revision, Scan
 from kindrop.services import (
     AmbiguousSendError,
     DriveComic,
@@ -674,3 +676,88 @@ def test_scan_accepts_pdf_revisions(tmp_path: Path, make_pdf) -> None:
         assert candidate.comic_metadata == {"title": None, "series": None, "number": None}
         assert Path(candidate.cache_path).suffix == ".pdf"
         assert Path(candidate.cache_path).exists()
+
+
+def test_scan_enqueues_a_library_file_for_each_new_revision(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    archive = tmp_path / "Naruto c700.cbz"
+    make_cbz(archive)
+    with database.session() as session:
+        session.add(AppSettings(id=1, source_folder_id="folder"))
+        scan = Scan()
+        session.add(scan)
+        session.commit()
+        scan_id = scan.id
+
+    ScanProcessor(database, FakeDrive(archive), tmp_path / "cache").run(scan_id)
+
+    with database.session() as session:
+        item = session.scalar(select(LibraryFile))
+        assert item is not None
+        assert item.status == "pending"
+        assert item.series
+
+
+def test_scan_backfills_and_removes_library_files_to_match_drive(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    archive = tmp_path / "Naruto c700.cbz"
+    make_cbz(archive)
+    drive = FakeDrive(archive)
+    comic = drive.walk_comics("folder")[0]
+    present_fingerprint = revision_fingerprint(
+        comic.file_id, comic.checksum, comic.size, comic.modified_time
+    )
+    gone_file = tmp_path / "cache" / "library" / "Gone" / "Gone, Ch. 1.cbz"
+    gone_file.parent.mkdir(parents=True)
+    gone_file.write_bytes(b"stale")
+    with database.session() as session:
+        session.add(AppSettings(id=1, source_folder_id="folder"))
+        # A revision from before the Catalog existed, still present on Drive.
+        old = Revision(
+            drive_file_id=comic.file_id,
+            fingerprint=present_fingerprint,
+            name=comic.name,
+            path=comic.path,
+            size=comic.size,
+            modified_time=comic.modified_time,
+            status="sent",
+        )
+        # A revision whose file vanished from Drive, already mirrored.
+        gone = Revision(
+            drive_file_id="gone-1",
+            fingerprint="gone-1:md5:dead",
+            name="Gone c1.cbz",
+            path="Manga/Gone c1.cbz",
+            size=10,
+            status="sent",
+        )
+        session.add_all([old, gone])
+        session.flush()
+        session.add(
+            LibraryFile(
+                revision_id=gone.id,
+                title="Gone, Ch. 1",
+                series="Gone",
+                status="ready",
+                path="library/Gone/Gone, Ch. 1.cbz",
+            )
+        )
+        scan = Scan()
+        session.add(scan)
+        session.commit()
+        scan_id = scan.id
+        old_id = old.id
+        gone_id = gone.id
+
+    ScanProcessor(database, drive, tmp_path / "cache").run(scan_id)
+
+    with database.session() as session:
+        backfilled = session.scalar(
+            select(LibraryFile).where(LibraryFile.revision_id == old_id)
+        )
+        assert backfilled is not None and backfilled.status == "pending"
+        removed = session.scalar(
+            select(LibraryFile).where(LibraryFile.revision_id == gone_id)
+        )
+        assert removed.status == "removed"
+    assert not gone_file.exists()

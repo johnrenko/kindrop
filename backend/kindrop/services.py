@@ -16,7 +16,13 @@ from .archives import build_volume_archive
 from .database import Database
 from .domain import ConversionPreset, revision_fingerprint
 from .epub import EpubMetadataError, apply_epub_metadata
-from .metadata import ArchiveMetadataError, clean_title, read_comic_metadata, volume_number
+from .metadata import (
+    ArchiveMetadataError,
+    clean_title,
+    read_comic_metadata,
+    series_from_title,
+    volume_number,
+)
 from .models import (
     AppSettings,
     Artifact,
@@ -26,6 +32,7 @@ from .models import (
     DeliveryAttempt,
     Event,
     Job,
+    LibraryFile,
     Revision,
     Scan,
 )
@@ -163,6 +170,8 @@ class ScanProcessor:
             scan.discovered_count = already_processed + len(new_comics)
             session.commit()
 
+        self._reconcile_library(comics)
+
         scan_directory = self.cache_root / "scans" / scan_id
         scan_directory.mkdir(parents=True, exist_ok=True)
         for index, (comic, fingerprint) in enumerate(new_comics, start=1):
@@ -236,6 +245,11 @@ class ScanProcessor:
                         error=error_message,
                     )
                 )
+                if candidate_status == "ready":
+                    series = metadata_payload.get("series") or series_from_title(resolved_title)
+                    session.add(
+                        LibraryFile(revision_id=revision.id, title=resolved_title, series=series)
+                    )
                 scan = session.get(Scan, scan_id)
                 scan.processed_count = already_processed + index
                 total = already_processed + len(new_comics)
@@ -267,6 +281,57 @@ class ScanProcessor:
                 scan.completed_at = datetime.now(UTC)
                 add_event(session, "scan", scan.id, "scan.failed", message=message)
                 session.commit()
+
+    def _reconcile_library(self, comics: list[DriveComic]) -> None:
+        """Make the Library mirror converge on the Source Folder's current contents."""
+        present = {
+            revision_fingerprint(comic.file_id, comic.checksum, comic.size, comic.modified_time)
+            for comic in comics
+        }
+        with self.database.session() as session:
+            tracked = session.scalars(
+                select(LibraryFile).options(selectinload(LibraryFile.revision))
+            ).all()
+            tracked_revision_ids = set()
+            for item in tracked:
+                tracked_revision_ids.add(item.revision_id)
+                if item.status == "removed":
+                    continue
+                if item.revision.fingerprint not in present:
+                    if item.path:
+                        (self.cache_root / item.path).unlink(missing_ok=True)
+                    item.status = "removed"
+                    item.path = None
+                    add_event(
+                        session, "library", item.id, "library.file_removed", title=item.title
+                    )
+            # Backfill: revisions scanned before the Catalog existed get a Library File
+            # as long as their file is still in the Source Folder.
+            orphans = session.scalars(
+                select(Revision).where(
+                    Revision.status != "failed",
+                    Revision.fingerprint.in_(present),
+                    Revision.id.not_in(tracked_revision_ids),
+                )
+            ).all()
+            for revision in orphans:
+                candidate = session.scalar(
+                    select(Candidate).where(Candidate.revision_id == revision.id)
+                )
+                title = (
+                    candidate.title_override or candidate.resolved_title
+                    if candidate
+                    else clean_title(Path(revision.name).stem)
+                )
+                series = (candidate.comic_metadata or {}).get("series") if candidate else None
+                session.add(
+                    LibraryFile(
+                        revision_id=revision.id,
+                        title=title,
+                        series=series or series_from_title(title),
+                    )
+                )
+            session.commit()
 
 
 class JobProcessor:
