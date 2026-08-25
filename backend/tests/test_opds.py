@@ -116,3 +116,58 @@ def test_download_streams_the_file_and_counts_it(tmp_path: Path) -> None:
 def test_download_of_missing_or_unready_file_is_404(tmp_path: Path) -> None:
     client = build_catalog(tmp_path)
     assert client.get("/opds/download/unknown-id", auth=AUTH).status_code == 404
+
+
+def test_series_names_with_slashes_are_routable(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    cache_root = tmp_path / "cache"
+    with database.session() as session:
+        session.add(
+            AppSettings(
+                id=1,
+                catalog_enabled=True,
+                catalog_username="kindle",
+                catalog_password="correct-horse",
+            )
+        )
+        revision = Revision(
+            drive_file_id="drive-slash",
+            fingerprint="drive-slash:md5:x",
+            name="Fate_Zero_Tome_1.cbz",
+            path="Manga/Fate_Zero_Tome_1.cbz",
+            size=10,
+            status="candidate",
+        )
+        session.add(revision)
+        session.flush()
+        relative = "library/fatezerocache/Fate_Zero_Tome_1.cbz"
+        full = cache_root / relative
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_bytes(b"comic-bytes")
+        session.add(
+            LibraryFile(
+                revision_id=revision.id,
+                title="Fate/Zero, Tome 1",
+                series="Fate/Zero",
+                status="ready",
+                path=relative,
+                format="cbz",
+                size=11,
+                mirrored_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+    app = create_catalog_app(database, RuntimeSettings(cache_root=cache_root))
+    client = TestClient(app)
+    series_nav = ElementTree.fromstring(client.get("/opds/series", auth=AUTH).text)
+    entries = [entry for entry in series_nav.findall(f"{ATOM}entry")]
+    fate_zero_entry = next(
+        (e for e in entries if e.findtext(f"{ATOM}title") == "Fate/Zero"), None
+    )
+    assert fate_zero_entry is not None
+    href = fate_zero_entry.find(f"{ATOM}link").get("href")
+    series_response = client.get(href, auth=AUTH)
+    assert series_response.status_code == 200
+    series_feed = ElementTree.fromstring(series_response.text)
+    titles = [entry.findtext(f"{ATOM}title") for entry in series_feed.findall(f"{ATOM}entry")]
+    assert "Fate/Zero, Tome 1" in titles

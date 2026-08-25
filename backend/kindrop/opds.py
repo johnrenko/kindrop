@@ -138,7 +138,7 @@ def create_catalog_app(database: Database, runtime: RuntimeSettings | None = Non
             _navigation_entry(feed, name, f"/opds/series/{quote(name)}")
         return _atom_response(feed, NAVIGATION_TYPE)
 
-    @app.get("/opds/series/{series}", dependencies=[Depends(authenticated)])
+    @app.get("/opds/series/{series:path}", dependencies=[Depends(authenticated)])
     def series_feed(series: str, session: Session = Depends(session_dependency)) -> Response:
         items = session.scalars(
             _ready_files()
