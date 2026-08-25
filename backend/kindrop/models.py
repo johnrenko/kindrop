@@ -48,6 +48,9 @@ class AppSettings(Base):
             "crop_mode": "margins_and_page_numbers",
         },
     )
+    catalog_enabled: Mapped[bool] = mapped_column(default=False)
+    catalog_username: Mapped[str | None] = mapped_column(String(100))
+    catalog_password: Mapped[str | None] = mapped_column(String(100))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
@@ -80,6 +83,25 @@ class Revision(Base):
     modified_time: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(32), default="candidate", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class LibraryFile(Base):
+    __tablename__ = "library_files"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    revision_id: Mapped[str] = mapped_column(ForeignKey("revisions.id"), unique=True)
+    title: Mapped[str] = mapped_column(String(500))
+    series: Mapped[str] = mapped_column(String(500))
+    path: Mapped[str | None] = mapped_column(String(2000))
+    format: Mapped[str | None] = mapped_column(String(10))
+    size: Mapped[int] = mapped_column(BigInteger, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    error: Mapped[str | None] = mapped_column(Text)
+    mirrored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    download_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    revision: Mapped[Revision] = relationship()
 
 
 class Candidate(Base):

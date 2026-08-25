@@ -11,6 +11,7 @@ from kindrop.models import (
     Delivery,
     DeliveryAttempt,
     Job,
+    LibraryFile,
     Revision,
     Scan,
 )
@@ -695,3 +696,26 @@ def test_clear_history_handles_every_member_of_a_merged_job(tmp_path) -> None:
     with database.session() as session:
         assert session.scalars(select(Candidate)).first() is None
         assert {revision.status for revision in session.scalars(select(Revision))} == {"sent"}
+
+
+def test_library_file_persists_with_defaults(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    with database.session() as session:
+        revision = Revision(
+            drive_file_id="drive-1",
+            fingerprint="drive-1:md5:abc",
+            name="Naruto c700.cbz",
+            path="Manga/Naruto c700.cbz",
+            size=123,
+            status="candidate",
+        )
+        session.add(revision)
+        session.flush()
+        session.add(LibraryFile(revision_id=revision.id, title="Naruto, Ch. 700", series="Naruto"))
+        session.commit()
+
+    with database.session() as session:
+        stored = session.scalar(select(LibraryFile))
+        assert stored.status == "pending"
+        assert stored.download_count == 0
+        assert stored.revision.name == "Naruto c700.cbz"
