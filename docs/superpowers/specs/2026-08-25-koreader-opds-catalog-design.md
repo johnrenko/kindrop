@@ -98,9 +98,12 @@ policy):
 
 ## Reconciliation
 
-A Scan also reconciles the mirror: Library Files whose Revision disappeared from Drive
-are marked `removed` and their local file is deleted. Fingerprint dedup semantics of the
-email mode (`sent`/`failed` never re-offered) are unchanged.
+A Scan also reconciles the mirror in both directions: Library Files whose Revision
+disappeared from Drive are marked `removed` and their local file is deleted, and
+Revisions scanned before the Catalog existed that are still present on Drive are
+backfilled with a `pending` Library File — so the first Scan after this feature ships
+mirrors the whole existing library. Fingerprint dedup semantics of the email mode
+(`sent`/`failed` never re-offered) are unchanged.
 
 ## UI
 
