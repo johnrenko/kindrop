@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What Kindrop is
 
-A personal, local-only web app that converts new CBR/CBZ/PDF revisions from one Google Drive folder into Kindle-ready EPUBs (via Kindle Comic Converter), emails one EPUB per Gmail message to a Send-to-Kindle address, and reconciles Amazon's reply emails. Single user, no login, binds to `127.0.0.1:8787` only. It never writes back to Drive.
+A personal, local-only web app that converts new CBR/CBZ/PDF revisions from one Google Drive folder into Kindle-ready EPUBs (via Kindle Comic Converter), emails one EPUB per Gmail message to a Send-to-Kindle address, and reconciles Amazon's reply emails. It also mirrors the Source Folder into local Library Files and serves them as an authenticated OPDS Catalog on LAN port 8788 for KOReader (see ADR 0004); the KCC/email pipeline remains as an optional mode. Single user, no login, binds to `127.0.0.1:8787` only. It never writes back to Drive.
 
 `CONTEXT.md` defines the ubiquitous language (Source Folder, Scan, Candidate, Conversion Batch/Job/Preset, Artifact, Delivery, Kindle Destination) **including terms to avoid** — use these exact terms in code, UI, and docs. Product requirements live in `docs/specs/kindrop-v1.md` (no external issue tracker); design boundaries are in `docs/adr/`.
 
@@ -43,10 +43,11 @@ Migrations: Alembic in `backend/migrations/versions/`, run automatically by the 
 
 ## Architecture
 
-One Docker image, two containers sharing a SQLite database (WAL mode) in the `kindrop-data` volume:
+One Docker image, three containers sharing a SQLite database (WAL mode) in the `kindrop-data` volume:
 
 - **web** — FastAPI app. `kindrop/main.py` → `api.create_app()` (`api.py` holds all routes: REST API, OAuth callbacks, SSE, and serving the built React app).
 - **worker** — `kindrop/worker.py`, a single sequential polling loop that claims pending Scans/Jobs/Deliveries from the database. There is no message queue; the DB is the coordination layer.
+- **catalog** — `kindrop/catalog_main.py` → `opds.create_catalog_app()` (`opds.py`), the OPDS Catalog served to the LAN on 8788 behind Basic Auth; the only service exposed beyond localhost (ADR 0004).
 
 Backend pipeline (entities in `models.py`, one table each):
 `Scan` → `Revision` (dedup by fingerprint, see `domain.revision_fingerprint`) → `Candidate` → `Batch` → `Job` → `Artifact` (EPUB parts) → `Delivery` → `DeliveryAttempt`. An `Event` table feeds server-sent events to the UI.
@@ -65,7 +66,7 @@ Frontend: React 19 + TanStack Router (`router.tsx`) + TanStack Query (`query.ts`
 
 - Read-only toward Drive; `My Drive` folders only.
 - Validate `ComicInfo.xml` without extracting arbitrary archive paths; reject artifacts above 20 MiB (Gmail attachment limit).
-- Local single-user: do not add LAN exposure, multi-account, or auth without an ADR.
+- Local single-user: the web UI/API stays on 127.0.0.1; only the catalog service is LAN-exposed, read-only + Basic Auth (ADR 0004). Anything wider needs a new ADR.
 
 ## Operational cautions
 

@@ -44,3 +44,16 @@ _Avoid_: Email, upload
 The configured Kindle device profile and Send to Kindle email address.
 _Avoid_: Device, recipient
 
+**Catalog**:
+The OPDS catalog exposed on the LAN that KOReader browses to fetch Library Files.
+_Avoid_: server, share
+
+**Library File**:
+The local, KOReader-ready copy of a Drive File Revision: CBZ and PDF kept as-is, CBR
+repackaged into CBZ without image reprocessing.
+_Avoid_: cache, download
+
+**Mirroring**:
+The automatic materialization of Library Files after a Scan.
+_Avoid_: sync, replication
+
