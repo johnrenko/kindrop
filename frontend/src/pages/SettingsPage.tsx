@@ -32,7 +32,13 @@ export function SettingsPage() {
       client.invalidateQueries({ queryKey: queryKeys.settings }),
     ]);
   };
-  const save = useMutation({ mutationFn: api.saveSettings, onSuccess: refreshSetup });
+  const save = useMutation({
+    mutationFn: api.saveSettings,
+    onSuccess: async (data) => {
+      setDraft(data);
+      await refreshSetup();
+    },
+  });
   const upload = useMutation({ mutationFn: api.uploadGoogleClient, onSuccess: refreshSetup });
   const connect = useMutation({
     mutationFn: api.oauthStart,
