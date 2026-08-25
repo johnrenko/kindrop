@@ -29,6 +29,9 @@ class SettingsRead(BaseModel):
     source_folder_name: str | None
     kindle_email: str | None
     preset: ConversionPreset
+    catalog_enabled: bool = False
+    catalog_username: str | None = None
+    catalog_password: str | None = None
 
 
 class SettingsUpdate(BaseModel):
@@ -36,6 +39,7 @@ class SettingsUpdate(BaseModel):
     source_folder_name: str | None = None
     kindle_email: EmailStr | None = None
     preset: ConversionPreset
+    catalog_enabled: bool = False
 
 
 class FolderRead(BaseModel):
@@ -94,6 +98,20 @@ class CandidateRead(BaseModel):
     path: str
     size: int
     fingerprint: str
+
+
+class LibraryFailureRead(BaseModel):
+    id: str
+    title: str
+    error: str | None
+
+
+class LibrarySummary(BaseModel):
+    ready_count: int
+    pending_count: int
+    failed_count: int
+    total_bytes: int
+    failures: list[LibraryFailureRead]
 
 
 class JobRead(BaseModel):

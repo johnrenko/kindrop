@@ -719,3 +719,99 @@ def test_library_file_persists_with_defaults(tmp_path) -> None:
         assert stored.status == "pending"
         assert stored.download_count == 0
         assert stored.revision.name == "Naruto c700.cbz"
+
+
+def test_enabling_the_catalog_generates_credentials_once(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    client = TestClient(app)
+    preset = {
+        "kindle_profile": "KPW6",
+        "reading_direction": "rtl",
+        "spread_mode": "both",
+        "crop_mode": "margins_and_page_numbers",
+    }
+
+    first = client.put(
+        "/api/settings", json={"preset": preset, "catalog_enabled": True}
+    ).json()
+    assert first["catalog_enabled"] is True
+    assert first["catalog_username"] == "kindle"
+    assert first["catalog_password"]
+
+    second = client.put(
+        "/api/settings", json={"preset": preset, "catalog_enabled": True}
+    ).json()
+    assert second["catalog_password"] == first["catalog_password"]
+
+
+def test_library_summary_counts_and_lists_failures(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        for index, (status_value, size) in enumerate(
+            [("ready", 100), ("ready", 50), ("pending", 0), ("failed", 0), ("removed", 0)],
+            start=1,
+        ):
+            revision = Revision(
+                drive_file_id=f"drive-{index}",
+                fingerprint=f"drive-{index}:md5:x",
+                name=f"file-{index}.cbz",
+                path=f"Manga/file-{index}.cbz",
+                size=10,
+                status="candidate",
+            )
+            session.add(revision)
+            session.flush()
+            session.add(
+                LibraryFile(
+                    revision_id=revision.id,
+                    title=f"Title {index}",
+                    series="Series",
+                    status=status_value,
+                    size=size,
+                    error="boom" if status_value == "failed" else None,
+                )
+            )
+        session.commit()
+
+    summary = TestClient(app).get("/api/library").json()
+
+    assert summary["ready_count"] == 2
+    assert summary["pending_count"] == 1
+    assert summary["failed_count"] == 1
+    assert summary["total_bytes"] == 150
+    assert summary["failures"][0]["error"] == "boom"
+
+
+def test_retrying_a_failed_library_file_requeues_it(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        revision = Revision(
+            drive_file_id="drive-1",
+            fingerprint="drive-1:md5:x",
+            name="file.cbz",
+            path="Manga/file.cbz",
+            size=10,
+            status="candidate",
+        )
+        session.add(revision)
+        session.flush()
+        item = LibraryFile(
+            revision_id=revision.id,
+            title="Title",
+            series="Series",
+            status="failed",
+            error="boom",
+        )
+        session.add(item)
+        session.commit()
+        item_id = item.id
+
+    client = TestClient(app)
+    assert client.post(f"/api/library/{item_id}/retry").status_code == 200
+    with database.session() as session:
+        assert session.get(LibraryFile, item_id).status == "pending"
+    assert client.post(f"/api/library/{item_id}/retry").status_code == 409
+    assert client.post("/api/library/unknown/retry").status_code == 404

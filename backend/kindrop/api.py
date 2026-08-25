@@ -4,6 +4,7 @@ import shutil
 from collections.abc import AsyncIterator, Generator
 from datetime import UTC, datetime
 from pathlib import Path
+from secrets import token_urlsafe
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
@@ -30,6 +31,7 @@ from .models import (
     DeliveryAttempt,
     Event,
     Job,
+    LibraryFile,
     Scan,
 )
 from .oauth import authorization_url, exchange_code, validate_client_config
@@ -40,6 +42,7 @@ from .schemas import (
     FolderPageRead,
     GoogleClientPayload,
     JobRead,
+    LibrarySummary,
     MangaMatchRead,
     OAuthStart,
     ScanRead,
@@ -281,6 +284,9 @@ def create_app(
             source_folder_name=settings.source_folder_name,
             kindle_email=settings.kindle_email,
             preset=ConversionPreset.model_validate(settings.preset),
+            catalog_enabled=settings.catalog_enabled,
+            catalog_username=settings.catalog_username,
+            catalog_password=settings.catalog_password,
         )
 
     @app.put("/api/settings", response_model=SettingsRead)
@@ -292,6 +298,10 @@ def create_app(
         settings.source_folder_name = payload.source_folder_name
         settings.kindle_email = str(payload.kindle_email) if payload.kindle_email else None
         settings.preset = payload.preset.model_dump(mode="json")
+        if payload.catalog_enabled and not settings.catalog_password:
+            settings.catalog_username = "kindle"
+            settings.catalog_password = token_urlsafe(12)
+        settings.catalog_enabled = payload.catalog_enabled
         session.commit()
         return read_settings(session)
 
@@ -657,6 +667,41 @@ def create_app(
             raise HTTPException(status_code=404, detail="Delivery not found")
         replacement = clone_job(delivery.artifact.job, session)
         return {"id": replacement.id, "status": replacement.status}
+
+    @app.get("/api/library", response_model=LibrarySummary)
+    def library_summary(session: Session = Depends(session_dependency)) -> LibrarySummary:
+        files = session.scalars(
+            select(LibraryFile).where(LibraryFile.status != "removed")
+        ).all()
+        failures = [
+            {"id": item.id, "title": item.title, "error": item.error}
+            for item in files
+            if item.status == "failed"
+        ]
+        return LibrarySummary(
+            ready_count=sum(1 for item in files if item.status == "ready"),
+            pending_count=sum(1 for item in files if item.status in {"pending", "mirroring"}),
+            failed_count=len(failures),
+            total_bytes=sum(item.size for item in files if item.status == "ready"),
+            failures=failures,
+        )
+
+    @app.post("/api/library/{library_file_id}/retry")
+    def retry_library_file(
+        library_file_id: str, session: Session = Depends(session_dependency)
+    ) -> dict[str, str]:
+        item = session.get(LibraryFile, library_file_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="This Library File does not exist")
+        if item.status != "failed":
+            raise HTTPException(
+                status_code=409, detail="Only a failed Library File can be retried"
+            )
+        item.status = "pending"
+        item.error = None
+        add_event(session, "library", item.id, "library.file_requeued")
+        session.commit()
+        return {"status": "pending"}
 
     @app.delete("/api/cache", status_code=status.HTTP_204_NO_CONTENT)
     def purge_cache(session: Session = Depends(session_dependency)) -> Response:
