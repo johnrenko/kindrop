@@ -10,12 +10,21 @@ from .config import RuntimeSettings
 from .crypto import SecretStore
 from .database import Database
 from .google import GoogleDriveGateway, GoogleGmailGateway, GoogleServiceFactory
+from .library import LibraryMirror
 from .mail_monitor import AmazonMailMonitor, AmazonVerificationClient
-from .models import Candidate, Delivery, Event, Job, Scan
+from .models import Candidate, Delivery, Event, Job, LibraryFile, Scan
 from .runners import KccRunner
 from .services import JobProcessor, ScanProcessor, add_event
 
 logger = logging.getLogger(__name__)
+
+
+def recover_interrupted_library_files(database: Database) -> None:
+    """Re-queue Library Files the worker left mid-mirroring; the copy restarts cleanly."""
+    with database.session() as session:
+        for item in session.scalars(select(LibraryFile).where(LibraryFile.status == "mirroring")):
+            item.status = "pending"
+        session.commit()
 
 
 class DeliveryRateLimiter:
@@ -54,6 +63,7 @@ class Worker:
             cache_root=runtime.cache_root,
             wait_between_deliveries=self._wait_between_deliveries,
         )
+        self.library = LibraryMirror(self.database, self.drive, runtime.cache_root)
         self.mail = AmazonMailMonitor(self.database, self.gmail, AmazonVerificationClient())
         self._last_mail_check = 0.0
 
@@ -97,6 +107,11 @@ class Worker:
             self.jobs.run(job_id)
             self.check_mail_if_due()
 
+    def drain_pending_library_files(self) -> None:
+        while self.library.run_next():
+            self.drain_queued_jobs()
+            self.check_mail_if_due()
+
     def recover_interrupted_work(self) -> None:
         with self.database.session() as session:
             for scan in session.scalars(select(Scan).where(Scan.status == "scanning")):
@@ -116,6 +131,7 @@ class Worker:
                 )
                 job.completed_at = datetime.now(UTC)
             session.commit()
+        recover_interrupted_library_files(self.database)
         self.resolve_interrupted_unknowns()
 
     def resolve_interrupted_unknowns(self) -> None:
@@ -210,6 +226,7 @@ class Worker:
                 )
             if scan_id:
                 self.scans.run(scan_id)
+            self.drain_pending_library_files()
 
             current = time.monotonic()
             if current - last_cache_check >= 300:

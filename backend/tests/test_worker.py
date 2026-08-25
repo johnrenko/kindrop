@@ -5,6 +5,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import select
 
 from kindrop.config import RuntimeSettings
+from kindrop.database import Database
 from kindrop.models import (
     Artifact,
     Batch,
@@ -13,9 +14,10 @@ from kindrop.models import (
     DeliveryAttempt,
     Event,
     Job,
+    LibraryFile,
     Revision,
 )
-from kindrop.worker import Worker
+from kindrop.worker import Worker, recover_interrupted_library_files
 
 
 def _make_worker(tmp_path: Path) -> Worker:
@@ -223,6 +225,35 @@ def test_startup_fails_a_legacy_unknown_without_message_id(tmp_path: Path) -> No
         assert delivery.status == "failed"
         assert "before automatic verification" in delivery.error_detail
     assert worker.gmail.probes == [], "a delivery without Message-ID cannot be probed"
+
+
+def test_recover_resets_interrupted_mirroring_to_pending(tmp_path: Path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    with database.session() as session:
+        revision = Revision(
+            drive_file_id="drive-1",
+            fingerprint="drive-1:md5:abc",
+            name="Naruto c700.cbz",
+            path="Manga/Naruto c700.cbz",
+            size=100,
+            status="candidate",
+        )
+        session.add(revision)
+        session.flush()
+        session.add(
+            LibraryFile(
+                revision_id=revision.id,
+                title="Naruto, Ch. 700",
+                series="Naruto",
+                status="mirroring",
+            )
+        )
+        session.commit()
+
+    recover_interrupted_library_files(database)
+
+    with database.session() as session:
+        assert session.scalar(select(LibraryFile)).status == "pending"
 
 
 def test_startup_leaves_unknown_when_gmail_is_unreachable(tmp_path: Path) -> None:
