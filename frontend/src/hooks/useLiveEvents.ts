@@ -25,6 +25,11 @@ export function useLiveEvents() {
       "job.failed",
       "delivery.sent",
       "delivery.rejected",
+      "library.file_ready",
+      "library.file_failed",
+      "library.file_removed",
+      "library.file_requeued",
+      "library.file_downloaded",
     ].forEach((event) => source.addEventListener(event, refresh));
     return () => source.close();
   }, [queryClient]);
