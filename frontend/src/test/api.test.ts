@@ -45,6 +45,36 @@ describe("API client", () => {
       expect.objectContaining({ method: "POST" }),
     );
   });
+
+  it("fetches the library mirror summary", async () => {
+    const summary = {
+      ready_count: 12,
+      pending_count: 2,
+      failed_count: 1,
+      total_bytes: 314572800,
+      failures: [{ id: "lf-1", title: "Broken, Ch. 1", error: "boom" }],
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json(summary));
+
+    await expect(api.library()).resolves.toEqual(summary);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/library", expect.objectContaining({}));
+  });
+
+  it("retries a failed library file with a POST request", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ status: "queued" }), { status: 200 }));
+
+    await expect(api.retryLibraryFile("lf-1")).resolves.toEqual({ status: "queued" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/library/lf-1/retry",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
 });
 
 describe("Batch creation", () => {

@@ -24,6 +24,9 @@ export interface Settings {
   source_folder_name: string | null;
   kindle_email: string | null;
   preset: ConversionPreset;
+  catalog_enabled: boolean;
+  catalog_username: string | null;
+  catalog_password: string | null;
 }
 
 export interface Scan {
@@ -103,4 +106,18 @@ export interface DriveFolder {
 export interface KindleProfile {
   id: string;
   name: string;
+}
+
+export interface LibraryFailure {
+  id: string;
+  title: string;
+  error: string | null;
+}
+
+export interface LibrarySummary {
+  ready_count: number;
+  pending_count: number;
+  failed_count: number;
+  total_bytes: number;
+  failures: LibraryFailure[];
 }

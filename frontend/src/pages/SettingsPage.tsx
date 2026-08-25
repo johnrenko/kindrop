@@ -189,8 +189,50 @@ export function SettingsPage() {
           )}
         </section>
 
-        <section className="settings-section settings-section--quiet">
+        <section className="settings-section">
           <div className="settings-section__number">04</div>
+          <div className="settings-section__intro">
+            <span className="eyebrow">OPDS Catalog</span>
+            <h2>Open the Catalog</h2>
+            <p>Let KOReader browse your converted library over the local network via an OPDS feed, without touching Drive or Kindle delivery.</p>
+          </div>
+          {draft && (
+            <div className="settings-section__body credential-panel">
+              <div className="connection-line">
+                <div><span>Catalog</span><strong>{draft.catalog_enabled ? "Enabled" : "Disabled"}</strong></div>
+                <label className="check-all">
+                  <input
+                    type="checkbox"
+                    checked={draft.catalog_enabled}
+                    onChange={(event) => {
+                      const next = { ...draft, catalog_enabled: event.target.checked };
+                      setDraft(next);
+                      save.mutate(next);
+                    }}
+                  />
+                  Enable catalog
+                </label>
+              </div>
+              {draft.catalog_enabled && draft.catalog_username && draft.catalog_password && (
+                <>
+                  <div className="connection-line">
+                    <div><span>Username</span><strong>{draft.catalog_username}</strong></div>
+                  </div>
+                  <div className="connection-line">
+                    <div><span>Password</span><strong>{draft.catalog_password}</strong></div>
+                  </div>
+                  <p>
+                    In KOReader: Search &gt; OPDS catalog &gt; add http://&lt;your-Mac-IP&gt;:8788/opds with these credentials.
+                  </p>
+                </>
+              )}
+              {save.error && <p className="form-error">{save.error.message}</p>}
+            </div>
+          )}
+        </section>
+
+        <section className="settings-section settings-section--quiet">
+          <div className="settings-section__number">05</div>
           <div className="settings-section__intro"><span className="eyebrow">Housekeeping</span><h2>Tidy the workshop</h2><p>Clearing the cache removes source archives and unfinished EPUBs; history remains. Clearing history removes jobs, batches and deliveries; already-sent files are not proposed again.</p></div>
           <div className="settings-section__body">
             <div className="housekeeping-actions">

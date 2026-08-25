@@ -36,10 +36,20 @@ const payloads: Record<string, unknown> = {
       spread_mode: "both",
       crop_mode: "margins_and_page_numbers",
     },
+    catalog_enabled: false,
+    catalog_username: null,
+    catalog_password: null,
   },
   "/api/scans": [],
   "/api/jobs": [],
   "/api/candidates": [],
+  "/api/library": {
+    ready_count: 12,
+    pending_count: 2,
+    failed_count: 1,
+    total_bytes: 314572800,
+    failures: [{ id: "lf-1", title: "Broken, Ch. 1", error: "boom" }],
+  },
 };
 
 describe("Dashboard", () => {
@@ -143,5 +153,24 @@ describe("Dashboard", () => {
       "/api/scans/scan-2/resume",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("shows the Library mirror status", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const path = String(input);
+      if (path in payloads) return Response.json(payloads[path]);
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <DashboardPage />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText(/12 ready/i)).toBeInTheDocument();
+    expect(screen.getByText(/300 MB/)).toBeInTheDocument();
+    expect(screen.getByText(/2 mirroring/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 failed/i)).toBeInTheDocument();
   });
 });

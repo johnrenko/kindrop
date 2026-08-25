@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, FolderSearch, Pause, Play, RefreshCw, Square } from "lucide-react";
 
-import { api } from "../api";
+import { api, formatBytes } from "../api";
 import { EmptyState } from "../components/EmptyState";
 import { Progress } from "../components/Progress";
 import { StatusBadge } from "../components/StatusBadge";
@@ -15,6 +15,7 @@ export function DashboardPage() {
   const scans = useQuery({ queryKey: queryKeys.scans, queryFn: api.scans, refetchInterval: 5_000 });
   const jobs = useQuery({ queryKey: queryKeys.jobs, queryFn: api.jobs, refetchInterval: 5_000 });
   const candidates = useQuery({ queryKey: queryKeys.candidates, queryFn: api.candidates });
+  const library = useQuery({ queryKey: queryKeys.library, queryFn: api.library });
   const startScan = useMutation({
     mutationFn: api.startScan,
     onSuccess: async () => {
@@ -153,6 +154,22 @@ export function DashboardPage() {
           <Link to="/jobs" className="text-link">View full history <ArrowRight size={16} /></Link>
         </aside>
       </section>
+
+      {library.data ? (
+        <section className="workbench" aria-label="Library mirror">
+          <div className="section-heading">
+            <div>
+              <span className="eyebrow">OPDS catalog</span>
+              <h2>Library mirror</h2>
+            </div>
+          </div>
+          <p>
+            {library.data.ready_count} ready · {formatBytes(library.data.total_bytes)}
+            {library.data.pending_count > 0 && <> · {library.data.pending_count} mirroring</>}
+            {library.data.failed_count > 0 && <> · {library.data.failed_count} failed</>}
+          </p>
+        </section>
+      ) : null}
 
       <footer className="desk-footer">
         <RefreshCw size={15} aria-hidden="true" />

@@ -14,5 +14,6 @@ export const queryKeys = {
   scans: ["scans"] as const,
   candidates: ["candidates"] as const,
   jobs: ["jobs"] as const,
+  library: ["library"] as const,
 };
 

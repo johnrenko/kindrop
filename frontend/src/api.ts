@@ -4,6 +4,7 @@ import type {
   DriveFolder,
   Job,
   KindleProfile,
+  LibrarySummary,
   MangaMatch,
   Scan,
   Settings,
@@ -82,6 +83,9 @@ export const api = {
     ),
   purgeCache: () => request<void>("/api/cache", { method: "DELETE" }),
   clearHistory: () => request<void>("/api/history", { method: "DELETE" }),
+  library: () => request<LibrarySummary>("/api/library"),
+  retryLibraryFile: (id: string) =>
+    request(`/api/library/${encodeURIComponent(id)}/retry`, { method: "POST" }),
 };
 
 export function formatBytes(bytes: number): string {

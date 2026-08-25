@@ -12,6 +12,7 @@ export function useLiveEvents() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.scans });
       void queryClient.invalidateQueries({ queryKey: queryKeys.candidates });
       void queryClient.invalidateQueries({ queryKey: queryKeys.jobs });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.library });
     };
     [
       "scan.started",
