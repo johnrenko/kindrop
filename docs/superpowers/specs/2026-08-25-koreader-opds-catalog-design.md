@@ -53,8 +53,12 @@ A third compose service, `catalog`, runs from the same image and serves a small 
 FastAPI app (`kindrop/opds.py`):
 
 - Exposed to the LAN on port **8788** (the only port mapped beyond localhost).
-- **HTTP Basic Auth is mandatory** on every route; credentials are generated at bootstrap
-  and stored with the existing `SecretStore`.
+- **HTTP Basic Auth is mandatory** on every route except `/health` (used by the compose
+  healthcheck; it leaks only liveness). Credentials are generated on first enable — a
+  random `token_urlsafe(12)` password — and stored in plaintext in `app_settings`
+  (not the `SecretStore` used for Google OAuth tokens), because the password must be
+  displayed back to the user in Settings for entry into KOReader and only grants
+  read-only access to comic files on the local LAN. See ADR 0004 for the rationale.
 - Near read-only: it reads the shared SQLite database and streams files from the cache
   volume. Its only writes are the download-tracking fields (`last_downloaded_at`,
   `download_count`) and their `Event` rows. It never calls Google APIs and never touches

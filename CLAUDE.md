@@ -36,7 +36,7 @@ Full stack:
 
 ```sh
 ./scripts/bootstrap.sh        # first-time setup (generates secrets/kindrop.key)
-docker compose up --build     # web + worker
+docker compose up --build     # web + worker + catalog
 ```
 
 Migrations: Alembic in `backend/migrations/versions/`, run automatically by the web entrypoint. Write migrations idempotently — a fresh database must be able to bootstrap through the whole chain (see migration 0002's history).
