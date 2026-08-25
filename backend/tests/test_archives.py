@@ -4,7 +4,12 @@ from zipfile import ZipFile
 import pytest
 
 from kindrop import archives
-from kindrop.archives import ArchiveExtractionError, build_volume_archive, extract_archive_images
+from kindrop.archives import (
+    ArchiveExtractionError,
+    build_volume_archive,
+    extract_archive_images,
+    repackage_to_cbz,
+)
 from kindrop.metadata import volume_number
 
 
@@ -112,3 +117,31 @@ def test_extract_archive_images_refuses_pdf_sources(tmp_path: Path) -> None:
 
     with pytest.raises(ArchiveExtractionError, match="cannot be merged"):
         extract_archive_images(pdf, tmp_path / "out")
+
+
+def test_repackage_to_cbz_rebuilds_a_plain_zip(tmp_path) -> None:
+    # A zip-encoded .cbr exercises the same extract path without needing unrar.
+    source = tmp_path / "chapter.cbr"
+    with ZipFile(source, "w") as archive:
+        archive.writestr("pages/001.jpg", b"page-one")
+        archive.writestr("pages/002.png", b"page-two")
+        archive.writestr("ComicInfo.xml", b"<ComicInfo/>")
+    target = tmp_path / "out" / "chapter.cbz"
+    target.parent.mkdir()
+
+    repackage_to_cbz(source, target)
+
+    with ZipFile(target) as result:
+        names = sorted(result.namelist())
+    assert names == ["pages-001.jpg", "pages-002.png"]
+
+
+def test_repackage_to_cbz_leaves_no_target_on_failure(tmp_path) -> None:
+    source = tmp_path / "broken.cbr"
+    source.write_bytes(b"not an archive at all")
+    target = tmp_path / "broken.cbz"
+
+    with pytest.raises(ArchiveExtractionError):
+        repackage_to_cbz(source, target)
+
+    assert not target.exists()

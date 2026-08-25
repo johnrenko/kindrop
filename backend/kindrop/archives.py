@@ -85,3 +85,21 @@ def build_volume_archive(members: list[Path], workdir: Path) -> Path:
                 archive.write(path, path.relative_to(merged_root).as_posix())
     shutil.rmtree(merged_root, ignore_errors=True)
     return target
+
+
+def repackage_to_cbz(source: Path, target: Path) -> None:
+    """Rebuild a CBR as a plain CBZ that KOReader can open; images only, no reprocessing."""
+    workdir = target.parent / f".{target.stem}.repack"
+    shutil.rmtree(workdir, ignore_errors=True)
+    workdir.mkdir(parents=True)
+    try:
+        extract_archive_images(source, workdir)
+        with ZipFile(target, "w") as archive:
+            for path in sorted(workdir.iterdir()):
+                if path.is_file():
+                    archive.write(path, path.name)
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
