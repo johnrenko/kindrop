@@ -90,22 +90,22 @@ class LibraryMirror:
                 repackage_to_cbz(source, target)
             else:
                 shutil.copyfile(source, target)
+
+            with self.database.session() as session:
+                item = session.get(LibraryFile, library_file_id)
+                item.status = "ready"
+                item.path = str(target.relative_to(self.cache_root))
+                item.format = target_format
+                item.size = target.stat().st_size
+                item.mirrored_at = datetime.now(UTC)
+                item.error = None
+                add_event(session, "library", item.id, "library.file_ready", title=item.title)
+                session.commit()
         except BaseException:
             target.unlink(missing_ok=True)
             raise
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
-
-        with self.database.session() as session:
-            item = session.get(LibraryFile, library_file_id)
-            item.status = "ready"
-            item.path = str(target.relative_to(self.cache_root))
-            item.format = target_format
-            item.size = target.stat().st_size
-            item.mirrored_at = datetime.now(UTC)
-            item.error = None
-            add_event(session, "library", item.id, "library.file_ready", title=item.title)
-            session.commit()
 
     def _fail(self, library_file_id: str, message: str) -> None:
         logger.warning("Mirroring failed for %s: %s", library_file_id, message)
