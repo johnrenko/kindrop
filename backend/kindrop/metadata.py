@@ -11,6 +11,9 @@ _BRACKETED_TAGS = re.compile(r"\[[^\]]*\]|\{[^}]*\}|\([^)]*\)")
 _VOLUME_MARKER = re.compile(r"\b(?:v(?:ol(?:ume)?)?|t(?:ome)?)[.\s]*0*(\d{1,4})\b", re.IGNORECASE)
 _CHAPTER_MARKER = re.compile(r"\b(?:c(?:h(?:ap(?:ter)?)?)?)[.\s]*0*(\d{1,4})\b", re.IGNORECASE)
 _VOLUME_IN_NAME = re.compile(r"\bvolume[.\s]*0*(\d{1,4})\b", re.IGNORECASE)
+_TITLE_NUMBERING = re.compile(
+    r"[\s,–-]*\b(?:ch\.?|chapter|tome|vol\.?|volume)\s*\d+.*$", re.IGNORECASE
+)
 
 
 def _volume_label(match: re.Match[str]) -> str:
@@ -45,6 +48,12 @@ def format_kindle_title(series: str | None, number: str | None, fallback: str) -
     if number.isdigit():
         return f"{series}, Tome {int(number)}"
     return f"{series}, {number}"
+
+
+def series_from_title(title: str) -> str:
+    """Derive the series shelf name from a resolved title, for Catalog grouping."""
+    stripped = _TITLE_NUMBERING.sub("", title).strip(" -,–")
+    return stripped or title
 
 
 def volume_number(filename: str) -> int | None:

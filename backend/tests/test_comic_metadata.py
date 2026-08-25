@@ -12,6 +12,7 @@ from kindrop.metadata import (
     ComicMetadata,
     format_kindle_title,
     read_comic_metadata,
+    series_from_title,
 )
 
 
@@ -167,3 +168,11 @@ def test_parse_search_response_extracts_story_author_and_cover() -> None:
     assert match.author == "Masashi Kishimoto"
     assert match.cover_url == "https://img.anili.st/naruto.jpg"
     assert match.year == 1999
+
+
+def test_series_from_title_strips_chapter_and_volume_numbering() -> None:
+    assert series_from_title("Naruto, Ch. 700") == "Naruto"
+    assert series_from_title("One Piece Tome 12") == "One Piece"
+    assert series_from_title("Berserk Vol. 3 - The Golden Age") == "Berserk"
+    assert series_from_title("Solo Standalone Story") == "Solo Standalone Story"
+    assert series_from_title("Ch. 12") == "Ch. 12"
