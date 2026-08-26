@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, FileKey, Folder, History, LogOut, PlugZap, Save, Trash2 } from "lucide-react";
+import { ChevronRight, FileKey, Folder, HardDrive, History, LogOut, Mail, PlugZap, Radio, Save, Trash2 } from "lucide-react";
 
-import { api } from "../api";
+import { api, formatBytes } from "../api";
 import { StatusBadge } from "../components/StatusBadge";
 import { queryKeys } from "../query";
-import type { DriveFolder, Settings } from "../types";
+import type { DriveFolder, Settings, SshHostKey } from "../types";
 
 type Crumb = DriveFolder;
 
@@ -13,8 +13,10 @@ export function SettingsPage() {
   const client = useQueryClient();
   const setup = useQuery({ queryKey: queryKeys.setup, queryFn: api.setup });
   const settingsQuery = useQuery({ queryKey: queryKeys.settings, queryFn: api.settings });
+  const sshStatus = useQuery({ queryKey: queryKeys.sshStatus, queryFn: api.sshStatus });
   const profiles = useQuery({ queryKey: queryKeys.profiles, queryFn: api.profiles });
   const [draft, setDraft] = useState<Settings | null>(null);
+  const [hostKey, setHostKey] = useState<SshHostKey | null>(null);
   const [crumbs, setCrumbs] = useState<Crumb[]>([{ id: "root", name: "My Drive" }]);
   const current = crumbs.at(-1)!;
   const folders = useQuery({
@@ -33,6 +35,22 @@ export function SettingsPage() {
     ]);
   };
   const save = useMutation({ mutationFn: api.saveSettings, onSuccess: refreshSetup });
+  const sshTest = useMutation({
+    mutationFn: api.testSsh,
+    onSuccess: (status) => client.setQueryData(queryKeys.sshStatus, status),
+  });
+  const inspectHostKey = useMutation({
+    mutationFn: api.inspectSshHostKey,
+    onSuccess: setHostKey,
+  });
+  const trustHostKey = useMutation({
+    mutationFn: api.trustSshHostKey,
+    onSuccess: async () => {
+      setHostKey(null);
+      const status = await api.testSsh();
+      client.setQueryData(queryKeys.sshStatus, status);
+    },
+  });
   const upload = useMutation({ mutationFn: api.uploadGoogleClient, onSuccess: refreshSetup });
   const connect = useMutation({
     mutationFn: api.oauthStart,
@@ -57,6 +75,7 @@ export function SettingsPage() {
     setDraft(next);
     save.mutate(next);
   };
+  const currentSshStatus = sshTest.data ?? sshStatus.data;
 
   return (
     <div className="page settings-page">
@@ -72,7 +91,7 @@ export function SettingsPage() {
           <div className="settings-section__intro">
             <span className="eyebrow">Google connection</span>
             <h2>Open the library</h2>
-            <p>Upload the OAuth client JSON from your private Google Cloud project, then connect the Gmail account Amazon trusts.</p>
+            <p>Upload the OAuth client JSON from your private Google Cloud project, then connect the account that owns the Drive library.</p>
           </div>
           <div className="settings-section__body credential-panel">
             <div className="connection-line">
@@ -149,17 +168,34 @@ export function SettingsPage() {
         <section className="settings-section">
           <div className="settings-section__number">03</div>
           <div className="settings-section__intro">
-            <span className="eyebrow">Kindle Destination</span>
-            <h2>Set the receiving shelf</h2>
-            <p>The Gmail account above must appear in Amazon’s Approved Personal Document Email List.</p>
+            <span className="eyebrow">Primary Kindle route</span>
+            <h2>Send over Wi-Fi</h2>
+            <p>Kindrop copies directly into KOReader over key-only SSH. Wake the Kindle and keep it on the same Wi-Fi when a delivery is waiting.</p>
           </div>
           {draft && (
             <form
               className="settings-section__body settings-form"
               onSubmit={(event) => { event.preventDefault(); save.mutate(draft); }}
             >
-              <label>Send to Kindle email
-                <input type="email" required value={draft.kindle_email ?? ""} placeholder="reader_123@kindle.com" onChange={(event) => setDraft({ ...draft, kindle_email: event.target.value })} />
+              <div className="ssh-route-card">
+                <div className="ssh-route-card__mark"><Radio size={22} /></div>
+                <div>
+                  <span className="eyebrow">KOReader SSH</span>
+                  <strong>{currentSshStatus?.reachable === true ? "Kindle reachable" : currentSshStatus?.reachable === false ? "Kindle needs attention" : "Ready to test"}</strong>
+                  <small>{currentSshStatus?.detail ?? "The connection test also checks the destination and available space."}</small>
+                </div>
+                <StatusBadge status={currentSshStatus?.reachable === true ? "verified" : currentSshStatus?.reachable === false ? "action_required" : "pending"} />
+              </div>
+              <div className="form-pair">
+                <label>Kindle address
+                  <input required value={draft.ssh_host ?? ""} placeholder="192.168.1.53" onChange={(event) => setDraft({ ...draft, ssh_host: event.target.value })} />
+                </label>
+                <label>SSH port
+                  <input type="number" min="1" max="65535" required value={draft.ssh_port ?? 2222} onChange={(event) => setDraft({ ...draft, ssh_port: Number(event.target.value) })} />
+                </label>
+              </div>
+              <label>KOReader destination
+                <input required value={draft.ssh_destination ?? "/mnt/us/documents/KOReader/Kindrop"} onChange={(event) => setDraft({ ...draft, ssh_destination: event.target.value })} />
               </label>
               <label>Kindle profile
                 <select value={draft.preset.kindle_profile} onChange={(event) => setDraft({ ...draft, preset: { ...draft.preset, kindle_profile: event.target.value } })}>
@@ -183,14 +219,61 @@ export function SettingsPage() {
                   <option value="margins_and_page_numbers">Margins + page numbers</option><option value="margins">Margins only</option><option value="none">Do not crop</option>
                 </select>
               </label>
-              <button className="button button--primary" disabled={save.isPending}><Save size={17} /> {save.isPending ? "Saving settings…" : "Save destination"}</button>
-              {save.error && <p className="form-error">{save.error.message}</p>}
+              {currentSshStatus && (
+                <dl className="ssh-facts">
+                  <div><dt>Endpoint</dt><dd>{currentSshStatus.host ?? draft.ssh_host ?? "—"}:{currentSshStatus.port ?? draft.ssh_port ?? 2222}</dd></div>
+                  <div><dt>Destination</dt><dd>{currentSshStatus.destination ?? draft.ssh_destination ?? "—"}</dd></div>
+                  <div><dt>Capacity</dt><dd>{currentSshStatus.free_bytes === null ? "Unknown until tested" : `${formatBytes(currentSshStatus.free_bytes)} free`}</dd></div>
+                </dl>
+              )}
+              {hostKey && (
+                <div className="notice notice--verifying">
+                  <div>
+                    <strong>Compare the Kindle fingerprints</strong><br />
+                    <small>Currently trusted: <code>{hostKey.trusted_fingerprint ?? "none"}</code></small><br />
+                    <small>Presented now: <code>{hostKey.fingerprint}</code></small>
+                  </div>
+                  <button type="button" className="button button--secondary" onClick={() => trustHostKey.mutate(hostKey.fingerprint)} disabled={trustHostKey.isPending}>
+                    {hostKey.trusted_fingerprint ? "Trust new Kindle key" : "Trust this Kindle key"}
+                  </button>
+                </div>
+              )}
+              <div className="settings-actions">
+                <button className="button button--primary" disabled={save.isPending}><Save size={17} /> {save.isPending ? "Saving settings…" : "Save SSH destination"}</button>
+                <button type="button" className="button button--secondary" disabled={inspectHostKey.isPending} onClick={() => inspectHostKey.mutate()}>
+                  <FileKey size={17} /> {inspectHostKey.isPending ? "Reading identity…" : "Inspect SSH identity"}
+                </button>
+                <button type="button" className="button button--secondary" disabled={sshTest.isPending} onClick={() => sshTest.mutate()}>
+                  <HardDrive size={17} /> {sshTest.isPending ? "Testing Kindle…" : "Test Kindle connection"}
+                </button>
+              </div>
+              <p className="quiet-copy">Reserve <strong>{draft.ssh_host}</strong> for this Kindle in your router’s DHCP settings so the address remains stable.</p>
+              {(save.error || inspectHostKey.error || trustHostKey.error || sshTest.error || sshStatus.error) && <p className="form-error">{(save.error || inspectHostKey.error || trustHostKey.error || sshTest.error || sshStatus.error)?.message}</p>}
+            </form>
+          )}
+        </section>
+
+        <section className="settings-section settings-section--fallback">
+          <div className="settings-section__number">04</div>
+          <div className="settings-section__intro">
+            <span className="eyebrow">Manual email fallback</span>
+            <h2>A second route, only when asked</h2>
+            <p>If the Kindle is unavailable or full, History can send an individual document through Amazon instead. Kindrop never chooses email automatically.</p>
+          </div>
+          {draft && (
+            <form className="settings-section__body settings-form fallback-form" onSubmit={(event) => { event.preventDefault(); save.mutate(draft); }}>
+              <div className="fallback-form__heading"><Mail size={20} /><strong>Send to Kindle email</strong></div>
+              <label>Fallback address
+                <input type="email" value={draft.kindle_email ?? ""} placeholder="reader_123@kindle.com" onChange={(event) => setDraft({ ...draft, kindle_email: event.target.value || null })} />
+              </label>
+              <p className="quiet-copy">The connected Google account must remain in Amazon’s Approved Personal Document Email List.</p>
+              <button className="button button--secondary" disabled={save.isPending}><Save size={17} /> Save email fallback</button>
             </form>
           )}
         </section>
 
         <section className="settings-section settings-section--quiet">
-          <div className="settings-section__number">04</div>
+          <div className="settings-section__number">05</div>
           <div className="settings-section__intro"><span className="eyebrow">Housekeeping</span><h2>Tidy the workshop</h2><p>Clearing the cache removes source archives and unfinished EPUBs; history remains. Clearing history removes jobs, batches and deliveries; already-sent files are not proposed again.</p></div>
           <div className="settings-section__body">
             <div className="housekeeping-actions">

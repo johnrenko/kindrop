@@ -11,7 +11,8 @@ FROM ghcr.io/ciromattia/kcc:v11.0.1@sha256:7c7879486d384983b3c67c048481b9830fef0
 USER root
 RUN sed -i 's/ main/ main non-free/g' /etc/apt/sources.list \
     && apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libarchive-tools unrar \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        libarchive-tools openssh-client unrar \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 kindrop \
     && useradd --system --uid 10001 --gid kindrop --home-dir /app kindrop \

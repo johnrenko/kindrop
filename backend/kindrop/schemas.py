@@ -12,6 +12,7 @@ class SetupStatus(BaseModel):
     google_email: str | None
     source_folder_configured: bool
     kindle_destination_configured: bool
+    ssh_destination_configured: bool
     ready: bool
 
 
@@ -28,6 +29,13 @@ class SettingsRead(BaseModel):
     source_folder_id: str | None
     source_folder_name: str | None
     kindle_email: str | None
+    ssh_host: str
+    ssh_port: int
+    ssh_user: str
+    ssh_key_path: str
+    ssh_known_hosts_path: str
+    ssh_destination: str
+    kindle_reserve_mib: int
     preset: ConversionPreset
 
 
@@ -35,7 +43,41 @@ class SettingsUpdate(BaseModel):
     source_folder_id: str | None = None
     source_folder_name: str | None = None
     kindle_email: EmailStr | None = None
+    ssh_host: str = Field(default="192.168.1.53", min_length=1, max_length=253)
+    ssh_port: int = Field(default=2222, ge=1, le=65535)
+    ssh_user: str = Field(default="root", min_length=1, max_length=100)
+    ssh_key_path: str = Field(
+        default="/run/secrets/kindle_ssh_key", min_length=1, max_length=2000
+    )
+    ssh_known_hosts_path: str = Field(
+        default="/data/kindle_known_hosts", min_length=1, max_length=2000
+    )
+    ssh_destination: str = Field(
+        default="/mnt/us/documents/KOReader/Kindrop", min_length=1, max_length=2000
+    )
+    kindle_reserve_mib: int = Field(default=100, ge=0, le=4096)
     preset: ConversionPreset
+
+
+class SshStatus(BaseModel):
+    configured: bool
+    reachable: bool | None
+    host: str | None
+    port: int
+    destination: str | None
+    free_bytes: int | None
+    capacity_unknown: bool
+    detail: str | None
+    tested_at: datetime | None
+
+
+class SshHostKeyRead(BaseModel):
+    fingerprint: str
+    trusted_fingerprint: str | None = None
+
+
+class SshTrustRequest(BaseModel):
+    fingerprint: str = Field(min_length=8, max_length=200)
 
 
 class FolderRead(BaseModel):
@@ -69,6 +111,7 @@ class CandidateUpdate(BaseModel):
     number: str | None = Field(default=None, max_length=50)
     author: str | None = Field(default=None, max_length=500)
     cover_url: str | None = Field(default=None, max_length=2000)
+    optimize: bool | None = None
 
 
 class MangaMatchRead(BaseModel):
@@ -94,6 +137,7 @@ class CandidateRead(BaseModel):
     path: str
     size: int
     fingerprint: str
+    optimize: bool
 
 
 class JobRead(BaseModel):
@@ -101,6 +145,8 @@ class JobRead(BaseModel):
     batch_id: str
     status: str
     title: str
+    optimize: bool
+    delivery_transport: str
     preset: ConversionPreset
     merged_count: int | None = None
     progress: int

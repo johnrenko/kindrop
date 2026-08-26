@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Ban, Loader2, MoreHorizontal, RotateCcw } from "lucide-react";
+import { AlertTriangle, Ban, Loader2, Mail, MoreHorizontal, RotateCcw } from "lucide-react";
 
 import { api } from "../api";
 import { EmptyState } from "../components/EmptyState";
@@ -46,6 +46,19 @@ export function JobsPage() {
     mutationFn: api.resendDelivery,
     onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.jobs }),
   });
+  const emailFallback = useMutation({
+    mutationFn: api.sendDeliveryByEmail,
+    onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.jobs }),
+  });
+  const sendByEmail = (deliveryId: string, capacityUnknown = false) => {
+    if (
+      capacityUnknown &&
+      !window.confirm(
+        "Kindle capacity is unknown. Send this document through the manual email fallback instead?",
+      )
+    ) return;
+    emailFallback.mutate(deliveryId);
+  };
   const statusCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const job of jobs.data ?? []) {
@@ -66,7 +79,7 @@ export function JobsPage() {
       </header>
       {!jobs.isLoading && !jobs.data?.length ? (
         <EmptyState eyebrow="No history yet" title="Your first dispatch will appear here">
-          <p>Each conversion, EPUB part, Gmail message and Amazon response is kept together.</p>
+          <p>Each optimization, Kindle copy and manual email fallback is kept together.</p>
         </EmptyState>
       ) : (
         <>
@@ -105,7 +118,7 @@ export function JobsPage() {
                       <div><h2>{job.title}</h2><p>{new Date(job.created_at).toLocaleString()}{job.merged_count && job.merged_count > 1 ? ` · ${job.merged_count} chapters` : ""}</p></div>
                       <StatusBadge status={job.status} />
                     </div>
-                    {!["sent", "failed", "cancelled"].includes(job.status) && <Progress value={job.progress} label={job.status} />}
+                    {!["sent", "failed", "cancelled", "copied_to_kindle"].includes(job.status) && <Progress value={job.progress} label={statusLabels[job.status] ?? job.status} />}
                     {job.error && <p className="notice notice--error"><AlertTriangle size={17} /> {job.error}</p>}
                     {job.deliveries.length > 0 && (
                       <ol className="delivery-list">
@@ -114,6 +127,23 @@ export function JobsPage() {
                             <div><strong>{delivery.filename}</strong><small>Part {delivery.part_number}/{delivery.total_parts}</small></div>
                             <StatusBadge status={delivery.status} />
                             {delivery.error_code && <span className="error-code">{delivery.error_code}</span>}
+                            {["pending", "waiting_for_kindle", "waiting_for_space"].includes(delivery.status) && (
+                              <div className="delivery-resend delivery-resend--ssh">
+                                {delivery.error_detail && (
+                                  <p className="notice notice--verifying">
+                                    <Loader2 size={15} className="spin" /> {delivery.error_detail}
+                                  </p>
+                                )}
+                                <button
+                                  className="button button--secondary"
+                                  onClick={() => sendByEmail(delivery.id, delivery.capacity_unknown)}
+                                  disabled={emailFallback.isPending}
+                                >
+                                  <Mail size={16} /> Send by email instead
+                                </button>
+                                {emailFallback.error && <p className="form-error">{emailFallback.error.message}</p>}
+                              </div>
+                            )}
                             {["unknown", "failed"].includes(delivery.status) && (
                               <div className="delivery-resend">
                                 {delivery.error_detail && (
@@ -136,7 +166,10 @@ export function JobsPage() {
                         ))}
                       </ol>
                     )}
-                    {(["sent", "failed", "cancelled"].includes(job.status)) && (
+                    {job.status === "copied_to_kindle" && (
+                      <p className="quiet-copy">Copied to Kindle. If it is not visible yet, refresh or reopen the Kindrop folder in KOReader.</p>
+                    )}
+                    {(["sent", "copied_to_kindle", "failed", "cancelled"].includes(job.status)) && (
                       <div className="job-entry__actions">
                         <button
                           className="button button--secondary"
@@ -172,7 +205,12 @@ export function JobsPage() {
                         </div>
                       </div>
                     )}
-                    {job.status === "queued" && (
+                    {[
+                      "queued",
+                      "ready_to_deliver",
+                      "waiting_for_kindle",
+                      "waiting_for_space",
+                    ].includes(job.status) && (
                       <button className="button button--secondary" onClick={() => cancel.mutate(job.id)} disabled={cancel.isPending}>
                         <Ban size={16} /> Cancel
                       </button>

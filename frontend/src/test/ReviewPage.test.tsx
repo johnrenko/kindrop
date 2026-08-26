@@ -20,6 +20,7 @@ function makeCandidate(index: number): Candidate {
     path: `Naruto/Naruto ${index}.cbz`,
     size: 1024,
     fingerprint: `fp-${index}`,
+    optimize: true,
   };
 }
 
@@ -59,6 +60,21 @@ async function findCheckboxes() {
 }
 
 describe("Review selection", () => {
+  it("selects every new candidate by default", async () => {
+    renderReview();
+    const boxes = await findCheckboxes();
+
+    expect(boxes.map((box) => (box as HTMLInputElement).checked)).toEqual([
+      true,
+      true,
+      true,
+      true,
+      true,
+    ]);
+    expect(screen.getByText("5 selected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Optimize & send 5/i })).toBeEnabled();
+  });
+
   it("selects a range with shift+click", async () => {
     renderReview();
     const boxes = await findCheckboxes();
@@ -70,8 +86,8 @@ describe("Review selection", () => {
     await user.click(boxes[3]);
     await user.keyboard("{/Shift}");
 
-    expect(boxes.map((box) => (box as HTMLInputElement).checked)).toEqual([true, true, true, true, false]);
-    expect(screen.getByText("4 selected")).toBeInTheDocument();
+    expect(boxes.map((box) => (box as HTMLInputElement).checked)).toEqual([false, false, false, false, true]);
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
   });
 
   it("deselects a range with shift+click on a selected line", async () => {
@@ -79,9 +95,7 @@ describe("Review selection", () => {
     const boxes = await findCheckboxes();
     const user = userEvent.setup();
 
-    // Select everything, then shift-click-deselect lines 2..4.
-    const selectAll = screen.getAllByRole("checkbox").find((box) => box.closest(".check-all") !== null)!;
-    await user.click(selectAll);
+    // Everything starts selected, then shift-click-deselect lines 2..4.
     await user.click(boxes[1]);
     expect((boxes[1] as HTMLInputElement).checked).toBe(false);
     await user.keyboard("{Shift>}");
@@ -100,6 +114,28 @@ describe("Review selection", () => {
     await user.click(boxes[2]);
     await user.keyboard("{/Shift}");
 
-    expect(boxes.map((box) => (box as HTMLInputElement).checked)).toEqual([false, false, true, false, false]);
+    expect(boxes.map((box) => (box as HTMLInputElement).checked)).toEqual([true, true, false, true, true]);
+  });
+});
+
+describe("Review preparation choices", () => {
+  it("optimizes PDF by default and identifies EPUB passthrough", async () => {
+    const mixed = [
+      { ...makeCandidate(1), name: "Guide.pdf", path: "Docs/Guide.pdf" },
+      { ...makeCandidate(2), name: "Novel.epub", path: "Books/Novel.epub" },
+    ];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input) === "/api/candidates") return Response.json(mixed);
+      return Response.json(payloads[String(input)]);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ReviewPage />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole("checkbox", { name: "Optimize Guide.pdf" })).toBeChecked();
+    expect(screen.getByText("EPUB · Sends unchanged")).toBeInTheDocument();
   });
 });

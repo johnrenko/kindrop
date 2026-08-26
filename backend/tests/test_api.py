@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -24,6 +26,113 @@ def test_health_reports_runtime_dependencies(tmp_path) -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
     assert response.json()["database"] == "ok"
+
+
+def test_settings_expose_ssh_first_koreader_defaults(tmp_path) -> None:
+    app = create_app(Database(f"sqlite:///{tmp_path / 'test.db'}"))
+
+    response = TestClient(app).get("/api/settings")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["preset"]["kindle_profile"] == "KPW"
+    assert body["ssh_host"] == "192.168.1.53"
+    assert body["ssh_port"] == 2222
+    assert body["ssh_user"] == "root"
+    assert body["ssh_key_path"] == "/run/secrets/kindle_ssh_key"
+    assert body["ssh_known_hosts_path"] == "/data/kindle_known_hosts"
+    assert body["ssh_destination"] == "/mnt/us/documents/KOReader/Kindrop"
+    assert body["kindle_reserve_mib"] == 100
+
+
+def test_settings_update_persists_configurable_ssh_connection(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    client = TestClient(create_app(database))
+
+    response = client.put(
+        "/api/settings",
+        json={
+            "source_folder_id": "drive-root",
+            "source_folder_name": "Kindle",
+            "kindle_email": "reader@kindle.com",
+            "preset": PRESET,
+            "ssh_host": "kindle.home",
+            "ssh_port": 2200,
+            "ssh_user": "reader",
+            "ssh_key_path": "/ssh/existing_key",
+            "ssh_known_hosts_path": "/ssh/known_hosts",
+            "ssh_destination": "/mnt/us/documents/KOReader/Kindrop",
+            "kindle_reserve_mib": 125,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ssh_host"] == "kindle.home"
+    assert response.json()["ssh_key_path"] == "/ssh/existing_key"
+    assert client.get("/api/settings").json()["kindle_reserve_mib"] == 125
+
+
+def test_ssh_test_probes_the_configured_kindle_and_reports_capacity(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    seen = []
+
+    class FakeTransport:
+        def probe(self):
+            return SimpleNamespace(reachable=True, free_bytes=784_334_848, detail=None)
+
+    def transport_factory(config):
+        seen.append(config)
+        return FakeTransport()
+
+    client = TestClient(create_app(database, ssh_transport_factory=transport_factory))
+
+    response = client.post("/api/ssh/test")
+
+    assert response.status_code == 200
+    assert response.json()["reachable"] is True
+    assert response.json()["free_bytes"] == 784_334_848
+    assert response.json()["capacity_unknown"] is False
+    assert response.json()["destination"] == "/mnt/us/documents/KOReader/Kindrop"
+    assert seen[0].host == "192.168.1.53"
+    assert str(seen[0].key_path) == "/run/secrets/kindle_ssh_key"
+    assert TestClient(client.app).get("/api/ssh/status").json()["reachable"] is True
+
+
+def test_ssh_host_key_requires_explicit_matching_confirmation(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    trusted = []
+
+    class FakeTransport:
+        def inspect_host_key(self):
+            return SimpleNamespace(fingerprint="SHA256:kindle-key")
+
+        def pinned_host_key(self):
+            return SimpleNamespace(fingerprint="SHA256:old-key")
+
+        def trust_host_key(self, fingerprint):
+            trusted.append(fingerprint)
+            if fingerprint != "SHA256:kindle-key":
+                raise ValueError("fingerprint changed")
+            return SimpleNamespace(fingerprint=fingerprint)
+
+    client = TestClient(
+        create_app(database, ssh_transport_factory=lambda _config: FakeTransport())
+    )
+
+    inspected = client.post("/api/ssh/host-key")
+    rejected = client.post("/api/ssh/trust", json={"fingerprint": "SHA256:wrong-key"})
+    accepted = client.post("/api/ssh/trust", json=inspected.json())
+
+    assert inspected.json() == {
+        "fingerprint": "SHA256:kindle-key",
+        "trusted_fingerprint": "SHA256:old-key",
+    }
+    assert rejected.status_code == 409
+    assert accepted.json() == {
+        "fingerprint": "SHA256:kindle-key",
+        "trusted_fingerprint": "SHA256:kindle-key",
+    }
+    assert trusted == ["SHA256:wrong-key", "SHA256:kindle-key"]
 
 
 def test_batch_creation_snapshots_preset_and_queues_selected_candidates(tmp_path) -> None:
@@ -182,6 +291,37 @@ def test_candidate_status_edit_keeps_the_title_override(tmp_path) -> None:
 
     assert response.status_code == 200
     assert response.json()["title_override"] == "My override"
+
+
+def test_candidate_optimization_defaults_to_pdf_on_and_epub_passthrough(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        pdf_id = _seed_ready(session, "scan.pdf")
+        epub_id = _seed_ready(session, "book.epub")
+        session.commit()
+
+    candidates = {
+        item["id"]: item for item in TestClient(app).get("/api/candidates").json()
+    }
+
+    assert candidates[pdf_id]["optimize"] is True
+    assert candidates[epub_id]["optimize"] is False
+
+
+def test_candidate_optimization_can_be_disabled_for_a_pdf(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        candidate_id = _seed_ready(session, "scan.pdf")
+        session.commit()
+
+    response = TestClient(app).patch(
+        f"/api/candidates/{candidate_id}", json={"optimize": False}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["optimize"] is False
 
 
 PRESET = {
@@ -488,6 +628,35 @@ def test_merged_batch_keeps_pdf_candidates_as_individual_jobs(tmp_path) -> None:
         assert pdf_job.merged_candidate_ids is None
 
 
+def test_batch_candidate_options_snapshot_ssh_transport_and_optimization(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        session.add(AppSettings(id=1))
+        pdf = _seed_ready(session, "document.pdf")
+        epub = _seed_ready(session, "book.epub")
+        session.commit()
+
+    response = TestClient(app).post(
+        "/api/batches",
+        json={
+            "candidate_ids": [pdf, epub],
+            "candidate_options": [
+                {"candidate_id": pdf, "optimize": False},
+                {"candidate_id": epub, "optimize": False},
+            ],
+            "preset": PRESET,
+        },
+    )
+
+    assert response.status_code == 201
+    with database.session() as session:
+        jobs = {job.candidate_id: job for job in session.scalars(select(Job))}
+        assert jobs[pdf].optimize is False
+        assert jobs[epub].optimize is False
+        assert {job.delivery_transport for job in jobs.values()} == {"ssh"}
+
+
 def test_retry_requeues_every_member_of_a_merged_job(tmp_path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'test.db'}")
     app = create_app(database)
@@ -653,7 +822,7 @@ def test_cancel_rejects_non_queued_job(tmp_path) -> None:
     response = TestClient(app).post(f"/api/jobs/{job_id}/cancel")
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "Only queued jobs can be cancelled"
+    assert response.json()["detail"] == "This job can no longer be cancelled"
 
 
 def test_cancel_rejects_unknown_job(tmp_path) -> None:
@@ -663,6 +832,63 @@ def test_cancel_rejects_unknown_job(tmp_path) -> None:
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Job not found"
+
+
+def test_email_fallback_cancels_pending_ssh_delivery_and_queues_gmail_job(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    artifact_file = tmp_path / "volume.cbz"
+    artifact_file.write_bytes(b"cbz")
+    with database.session() as session:
+        session.add(AppSettings(id=1, kindle_email="reader@kindle.com"))
+        candidate_id = _seed_ready(session, "volume.cbz")
+        candidate = session.get(Candidate, candidate_id)
+        candidate.status = "queued"
+        batch = Batch(preset=PRESET)
+        session.add(batch)
+        session.flush()
+        job = Job(
+            batch_id=batch.id,
+            candidate_id=candidate_id,
+            status="waiting_for_space",
+            preset=PRESET,
+            title="Volume",
+            optimize=True,
+            delivery_transport="ssh",
+        )
+        session.add(job)
+        session.flush()
+        artifact = Artifact(
+            job_id=job.id,
+            filename="volume.cbz",
+            path=str(artifact_file),
+            size=3,
+        )
+        session.add(artifact)
+        session.flush()
+        delivery = Delivery(
+            artifact_id=artifact.id, status="waiting_for_space", transport="ssh"
+        )
+        session.add(delivery)
+        session.commit()
+        delivery_id = delivery.id
+
+    response = TestClient(app).post(
+        f"/api/deliveries/{delivery_id}/email-fallback"
+    )
+
+    assert response.status_code == 201
+    with database.session() as session:
+        assert session.get(Delivery, delivery_id).status == "cancelled"
+        replacement = session.get(Job, response.json()["id"])
+        assert replacement.delivery_transport == "gmail"
+        assert replacement.optimize is True
+        assert replacement.status == "queued"
+        old_delivery = session.get(Delivery, delivery_id)
+        source_batch = old_delivery.artifact.job.batch
+        assert source_batch.status == "completed_with_errors"
+        assert source_batch.completed_at is not None
+    assert not artifact_file.exists()
 
 
 def test_clear_history_handles_every_member_of_a_merged_job(tmp_path) -> None:

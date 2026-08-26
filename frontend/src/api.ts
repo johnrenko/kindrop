@@ -1,5 +1,6 @@
 import type {
   Candidate,
+  CandidateOption,
   ConversionPreset,
   DriveFolder,
   Job,
@@ -8,6 +9,8 @@ import type {
   Scan,
   Settings,
   SetupStatus,
+  SshStatus,
+  SshHostKey,
 } from "./types";
 
 export interface CandidateUpdate {
@@ -36,6 +39,14 @@ export const api = {
   settings: () => request<Settings>("/api/settings"),
   saveSettings: (settings: Settings) =>
     request<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(settings) }),
+  sshStatus: () => request<SshStatus>("/api/ssh/status"),
+  testSsh: () => request<SshStatus>("/api/ssh/test", { method: "POST" }),
+  inspectSshHostKey: () => request<SshHostKey>("/api/ssh/host-key", { method: "POST" }),
+  trustSshHostKey: (fingerprint: string) =>
+    request<SshHostKey>("/api/ssh/trust", {
+      method: "POST",
+      body: JSON.stringify({ fingerprint }),
+    }),
   profiles: () => request<KindleProfile[]>("/api/kindle-profiles"),
   scans: () => request<Scan[]>("/api/scans"),
   startScan: () => request<Scan>("/api/scans", { method: "POST" }),
@@ -51,13 +62,19 @@ export const api = {
   candidatePreviewUrl: (id: string) => `/api/candidates/${encodeURIComponent(id)}/preview`,
   searchMetadata: (query: string) =>
     request<MangaMatch[]>(`/api/metadata/search?query=${encodeURIComponent(query)}`),
-  createBatch: (candidateIds: string[], preset: ConversionPreset, mergeByVolume = false) =>
+  createBatch: (
+    candidateIds: string[],
+    preset: ConversionPreset,
+    mergeByVolume = false,
+    candidateOptions: CandidateOption[] = [],
+  ) =>
     request<{ id: string }>("/api/batches", {
       method: "POST",
       body: JSON.stringify({
         candidate_ids: candidateIds,
         preset,
         merge_by_volume: mergeByVolume,
+        candidate_options: candidateOptions,
       }),
     }),
   jobs: () => request<Job[]>("/api/jobs"),
@@ -69,6 +86,8 @@ export const api = {
   cancelJob: (id: string) => request(`/api/jobs/${id}/cancel`, { method: "POST" }),
   resendDelivery: (id: string) =>
     request(`/api/deliveries/${id}/resend`, { method: "POST" }),
+  sendDeliveryByEmail: (id: string) =>
+    request(`/api/deliveries/${id}/email-fallback`, { method: "POST" }),
   uploadGoogleClient: (credentials: unknown) =>
     request<void>("/api/oauth/client", {
       method: "POST",

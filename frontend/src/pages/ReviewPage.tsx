@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDownAZ, BookOpen, Check, ChevronRight, Search, Send, Sparkles, X } from "lucide-react";
 
@@ -14,11 +14,17 @@ function candidateName(candidate: Candidate) {
   return candidate.title_override ?? candidate.resolved_title;
 }
 
+function candidateExtension(candidate: Candidate) {
+  return candidate.name.split(".").at(-1)?.toLowerCase() ?? "";
+}
+
 export function ReviewPage() {
   const client = useQueryClient();
   const candidates = useQuery({ queryKey: queryKeys.candidates, queryFn: api.candidates });
   const settings = useQuery({ queryKey: queryKeys.settings, queryFn: api.settings });
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [optimizedPdfs, setOptimizedPdfs] = useState<Set<string>>(new Set());
+  const seenCandidates = useRef<Set<string>>(new Set());
   const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [sortOrder, setSortOrder] = useState<SortOrder>("scan");
@@ -33,6 +39,25 @@ export function ReviewPage() {
     () => candidates.data?.filter((candidate) => candidate.status === "ready") ?? [],
     [candidates.data],
   );
+  useEffect(() => {
+    const readyIds = new Set(ready.map((candidate) => candidate.id));
+    const unseen = ready.filter((candidate) => !seenCandidates.current.has(candidate.id));
+    if (unseen.length || [...selected].some((id) => !readyIds.has(id))) {
+      setSelected((current) => {
+        const next = new Set([...current].filter((id) => readyIds.has(id)));
+        for (const candidate of unseen) next.add(candidate.id);
+        return next;
+      });
+      setOptimizedPdfs((current) => {
+        const next = new Set([...current].filter((id) => readyIds.has(id)));
+        for (const candidate of unseen) {
+          if (candidateExtension(candidate) === "pdf") next.add(candidate.id);
+        }
+        return next;
+      });
+    }
+    for (const candidate of unseen) seenCandidates.current.add(candidate.id);
+  }, [ready, selected]);
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const filtered = !needle
@@ -54,7 +79,17 @@ export function ReviewPage() {
     onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.candidates }),
   });
   const launch = useMutation({
-    mutationFn: () => api.createBatch([...selected], preset!, mergeByVolume),
+    mutationFn: () => api.createBatch(
+      [...selected],
+      preset!,
+      mergeByVolume,
+      ready
+        .filter((candidate) => selected.has(candidate.id) && candidateExtension(candidate) === "pdf")
+        .map((candidate) => ({
+          candidate_id: candidate.id,
+          optimize: optimizedPdfs.has(candidate.id),
+        })),
+    ),
     onSuccess: async () => {
       setSelected(new Set());
       await Promise.all([
@@ -200,6 +235,30 @@ export function ReviewPage() {
                     <div><dt>Number</dt><dd>{candidate.metadata.number || "—"}</dd></div>
                     <div><dt>Author</dt><dd>{candidate.metadata.author || "—"}</dd></div>
                   </dl>
+                  {candidateExtension(candidate) === "pdf" && (
+                    <label className="candidate__delivery-mode">
+                      <input
+                        type="checkbox"
+                        aria-label={`Optimize ${candidate.name}`}
+                        checked={optimizedPdfs.has(candidate.id)}
+                        onChange={(event) => {
+                          setOptimizedPdfs((current) => {
+                            const next = new Set(current);
+                            if (event.target.checked) next.add(candidate.id);
+                            else next.delete(candidate.id);
+                            return next;
+                          });
+                        }}
+                      />
+                      <span><strong>Optimize PDF</strong><small>Prepare pages for this Kindle before copying.</small></span>
+                    </label>
+                  )}
+                  {candidateExtension(candidate) === "epub" && (
+                    <p className="candidate__delivery-mode candidate__delivery-mode--passthrough">
+                      <strong>EPUB · Sends unchanged</strong>
+                      <small>Already ready for KOReader.</small>
+                    </p>
+                  )}
                   {expanded === candidate.id && (
                     <CandidateDetails
                       candidate={candidate}
@@ -252,7 +311,7 @@ export function ReviewPage() {
             <small>Chapters sharing “Volume NN” in their filename become one book.</small>
           </label>
           <button className="button button--primary" disabled={!selected.size || launch.isPending} onClick={() => launch.mutate()}>
-            <Send size={17} /> {launch.isPending ? "Creating batch…" : `Convert & send ${mergeByVolume ? bookCount(ready, selected) : selected.size || ""}`} <ChevronRight size={16} />
+            <Send size={17} /> {launch.isPending ? "Preparing delivery…" : `Optimize & send ${mergeByVolume ? bookCount(ready, selected) : selected.size || ""}`} <ChevronRight size={16} />
           </button>
           {launch.error && <p className="form-error">{launch.error.message}</p>}
         </aside>
@@ -372,4 +431,3 @@ function CandidateDetails({
     </div>
   );
 }
-

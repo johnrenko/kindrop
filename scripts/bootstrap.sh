@@ -12,4 +12,5 @@ else
   echo "Kept existing secrets/kindrop.key"
 fi
 
-echo "Run: docker compose up --build"
+echo "Set KINDROP_SSH_KEY_FILE in .env to your existing Kindle private key."
+echo "Then run: docker compose up --build"

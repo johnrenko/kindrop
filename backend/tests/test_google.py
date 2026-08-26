@@ -151,7 +151,7 @@ class FakeDriveFactory:
         return self._files
 
 
-def test_walk_comics_yields_cbr_cbz_and_pdf_files() -> None:
+def test_walk_comics_yields_supported_koreader_documents() -> None:
     from kindrop.google import FOLDER_MIME_TYPE, GoogleDriveGateway
 
     files = FakeDriveFiles(
@@ -164,11 +164,17 @@ def test_walk_comics_yields_cbr_cbz_and_pdf_files() -> None:
             "sub": [
                 {"id": "c3", "name": "volume.pdf", "size": "20", "modifiedTime": "t3"},
                 {"id": "c4", "name": "chapter.cbr", "size": "30", "modifiedTime": "t4"},
+                {"id": "c5", "name": "novel.epub", "size": "40", "modifiedTime": "t5"},
             ],
         }
     )
 
     comics = list(GoogleDriveGateway(FakeDriveFactory(files)).walk_comics("root"))
 
-    assert [comic.name for comic in comics] == ["volume.CBZ", "volume.pdf", "chapter.cbr"]
+    assert [comic.name for comic in comics] == [
+        "volume.CBZ",
+        "volume.pdf",
+        "chapter.cbr",
+        "novel.epub",
+    ]
     assert comics[1].path == "Sub/volume.pdf"

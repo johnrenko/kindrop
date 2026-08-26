@@ -1,5 +1,8 @@
 export const statusLabels: Record<string, string> = {
   pending: "Pending",
+  waiting_for_kindle: "Waiting for Kindle",
+  waiting_for_space: "Waiting for space",
+  copied_to_kindle: "Copied to Kindle",
   queued: "Queued",
   scanning: "Scanning",
   paused: "Paused",

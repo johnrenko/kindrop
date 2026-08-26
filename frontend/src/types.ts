@@ -15,6 +15,7 @@ export interface SetupStatus {
   google_email: string | null;
   source_folder_configured: boolean;
   kindle_destination_configured: boolean;
+  ssh_destination_configured?: boolean;
   ready: boolean;
 }
 
@@ -23,7 +24,32 @@ export interface Settings {
   source_folder_id: string | null;
   source_folder_name: string | null;
   kindle_email: string | null;
+  ssh_host?: string | null;
+  ssh_port?: number;
+  ssh_destination?: string | null;
   preset: ConversionPreset;
+}
+
+export interface SshStatus {
+  configured: boolean;
+  reachable: boolean | null;
+  host: string | null;
+  port: number;
+  destination: string | null;
+  free_bytes: number | null;
+  capacity_unknown: boolean;
+  detail: string | null;
+  tested_at: string | null;
+}
+
+export interface SshHostKey {
+  fingerprint: string;
+  trusted_fingerprint: string | null;
+}
+
+export interface CandidateOption {
+  candidate_id: string;
+  optimize: boolean;
 }
 
 export interface Scan {
@@ -56,6 +82,7 @@ export interface Candidate {
   path: string;
   size: number;
   fingerprint: string;
+  optimize: boolean;
 }
 
 export interface Delivery {
@@ -69,6 +96,10 @@ export interface Delivery {
   error_detail: string | null;
   verification_url: string | null;
   sent_at: string | null;
+  capacity_unknown?: boolean;
+  transport?: "ssh" | "gmail";
+  remote_path?: string | null;
+  remote_sha256?: string | null;
 }
 
 export interface Job {
@@ -76,6 +107,8 @@ export interface Job {
   batch_id: string;
   status: string;
   title: string;
+  optimize: boolean;
+  delivery_transport: "ssh" | "gmail";
   preset: ConversionPreset;
   merged_count: number | null;
   progress: number;

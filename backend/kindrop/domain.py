@@ -2,8 +2,9 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-# Input formats accepted from the Source Folder; KCC converts all three natively.
-COMIC_SUFFIXES = frozenset({".cbr", ".cbz", ".pdf"})
+# Input formats accepted from the Source Folder. EPUB is delivered unchanged;
+# image-based inputs may be optimized for the connected KOReader device.
+COMIC_SUFFIXES = frozenset({".cbr", ".cbz", ".pdf", ".epub"})
 
 
 class ReadingDirection(StrEnum):
@@ -24,7 +25,7 @@ class CropMode(StrEnum):
 
 
 class ConversionPreset(BaseModel):
-    kindle_profile: str = Field(default="KPW6", min_length=1, max_length=32)
+    kindle_profile: str = Field(default="KPW", min_length=1, max_length=32)
     reading_direction: ReadingDirection = ReadingDirection.RTL
     spread_mode: SpreadMode = SpreadMode.BOTH
     crop_mode: CropMode = CropMode.MARGINS_AND_PAGE_NUMBERS

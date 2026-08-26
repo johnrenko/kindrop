@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PropsWithChildren } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -43,7 +43,7 @@ const payloads: Record<string, unknown> = {
 };
 
 describe("Dashboard", () => {
-  it("starts a manual scan from a configured desk", async () => {
+  it("starts one scan automatically and retains a manual refresh", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const path = String(input);
       if (path === "/api/scans" && init?.method === "POST") {
@@ -67,13 +67,15 @@ describe("Dashboard", () => {
       </QueryClientProvider>,
     );
 
-    const scan = await screen.findByRole("button", { name: "Scan source folder" });
-    await userEvent.click(scan);
+    const refresh = await screen.findByRole("button", { name: "Refresh Drive" });
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/scans",
-      expect.objectContaining({ method: "POST" }),
-    );
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.filter(([path, init]) => path === "/api/scans" && init?.method === "POST")).toHaveLength(1);
+    });
+
+    await userEvent.click(refresh);
+
+    expect(fetchMock.mock.calls.filter(([path, init]) => path === "/api/scans" && init?.method === "POST")).toHaveLength(2);
   });
 
   it("pauses and stops a running scan", async () => {

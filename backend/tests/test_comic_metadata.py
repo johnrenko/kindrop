@@ -85,6 +85,13 @@ def _build_epub(path) -> None:
         archive.writestr("OEBPS/Images/page1.jpg", _image_bytes("white"))
 
 
+def test_read_comic_metadata_uses_epub_title(tmp_path) -> None:
+    epub_path = tmp_path / "book.epub"
+    _build_epub(epub_path)
+
+    assert read_comic_metadata(epub_path) == ComicMetadata(title="Old title")
+
+
 def test_apply_epub_metadata_rewrites_opf_and_cover(tmp_path) -> None:
     epub_path = tmp_path / "book.epub"
     _build_epub(epub_path)

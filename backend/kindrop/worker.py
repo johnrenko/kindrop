@@ -2,7 +2,7 @@ import logging
 import shutil
 import time
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from sqlalchemy import select
 
@@ -10,12 +10,17 @@ from .config import RuntimeSettings
 from .crypto import SecretStore
 from .database import Database
 from .google import GoogleDriveGateway, GoogleGmailGateway, GoogleServiceFactory
+from .kindle_ssh import KindleSshConfig, KindleSshTransport
 from .mail_monitor import AmazonMailMonitor, AmazonVerificationClient
 from .models import Candidate, Delivery, Event, Job, Scan
 from .runners import KccRunner
-from .services import JobProcessor, ScanProcessor, add_event
+from .services import JobProcessor, ScanProcessor, SshBatchDeliverer, add_event
 
 logger = logging.getLogger(__name__)
+
+# An unreachable or full Kindle keeps its Delivery pending; probing again too
+# often would hammer the device without making it appear any sooner.
+SSH_RETRY_SECONDS = 30.0
 
 
 class DeliveryRateLimiter:
@@ -55,11 +60,53 @@ class Worker:
             wait_between_deliveries=self._wait_between_deliveries,
         )
         self.mail = AmazonMailMonitor(self.database, self.gmail, AmazonVerificationClient())
+        self.ssh_deliveries = SshBatchDeliverer(
+            self.database,
+            transport_for=self._kindle_transport,
+            cache_root=runtime.cache_root,
+        )
         self._last_mail_check = 0.0
+        self._last_ssh_attempt = 0.0
+
+    def _kindle_transport(self, settings) -> KindleSshTransport:
+        config = KindleSshConfig(
+            host=settings.ssh_host,
+            port=settings.ssh_port,
+            user=settings.ssh_user,
+            key_path=Path(settings.ssh_key_path),
+            known_hosts_path=Path(settings.ssh_known_hosts_path),
+            destination_root=PurePosixPath(settings.ssh_destination),
+        )
+        return KindleSshTransport(config)
 
     def process_pending_work(self) -> None:
         self.drain_queued_jobs()
+        self.deliver_pending_ssh_batches()
         self.check_mail_if_due()
+
+    def deliver_pending_ssh_batches(self, *, force: bool = False) -> None:
+        current = time.monotonic()
+        if not force and current - self._last_ssh_attempt < SSH_RETRY_SECONDS:
+            return
+        self._last_ssh_attempt = current
+        with self.database.session() as session:
+            batch_ids = session.scalars(
+                select(Job.batch_id)
+                .where(
+                    Job.delivery_transport == "ssh",
+                    Job.status.in_(
+                        ["ready_to_deliver", "waiting_for_kindle", "waiting_for_space"]
+                    ),
+                )
+                .distinct()
+                .order_by(Job.batch_id)
+            ).all()
+        for batch_id in batch_ids:
+            try:
+                self.ssh_deliveries.run(batch_id)
+            except Exception:
+                logger.exception("The Kindle delivery for batch %s failed", batch_id)
+            self.check_mail_if_due()
 
     def _wait_between_deliveries(self) -> None:
         self.check_mail_if_due()
@@ -109,6 +156,21 @@ class Worker:
             for job in session.scalars(
                 select(Job).where(Job.status.in_(["downloading", "converting", "sending"]))
             ):
+                if job.delivery_transport == "ssh":
+                    # SSH work is resumable: downloads and conversions are idempotent,
+                    # and an upload publishes through a verified temporary name.
+                    if job.status in {"downloading", "converting"}:
+                        job.status = "queued"
+                        job.error = None
+                        job.started_at = None
+                        job.progress = 0
+                    else:
+                        job.status = "ready_to_deliver"
+                        job.error = (
+                            "The worker restarted before this copy finished; "
+                            "Kindrop will try again."
+                        )
+                    continue
                 job.status = "failed"
                 job.error = (
                     "The worker stopped during this job. Review existing deliveries "

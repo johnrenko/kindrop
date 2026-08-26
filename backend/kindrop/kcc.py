@@ -11,16 +11,23 @@ CROP_VALUES = {
 
 
 def build_kcc_command(
-    source: Path, output_directory: Path, preset: ConversionPreset, title: str
+    source: Path,
+    output_directory: Path,
+    preset: ConversionPreset,
+    title: str,
+    *,
+    target_size_mb: int = 19,
+    output_format: str = "EPUB",
 ) -> list[str]:
     command = [
         "c2e",
         "--profile",
         preset.kindle_profile,
         "--format",
-        "EPUB",
-        "--nokepub",
+        output_format,
     ]
+    if output_format == "EPUB":
+        command.append("--nokepub")
     if preset.reading_direction is ReadingDirection.RTL:
         command.append("--manga-style")
     command.extend(
@@ -29,10 +36,6 @@ def build_kcc_command(
             SPREAD_VALUES[preset.spread_mode],
             "--cropping",
             CROP_VALUES[preset.crop_mode],
-            "--batchsplit",
-            "1",
-            "--targetsize",
-            "20",
             # The containers mount /tmp as a 256 MiB tmpfs (compose.yaml); KCC's
             # per-page renders easily exceed it, so keep the workdir beside the
             # source on the /cache volume.
@@ -44,4 +47,12 @@ def build_kcc_command(
             str(source),
         ]
     )
+    if output_format == "EPUB":
+        tempdir_index = command.index("--tempdir")
+        command[tempdir_index:tempdir_index] = [
+            "--batchsplit",
+            "1",
+            "--targetsize",
+            str(target_size_mb),
+        ]
     return command

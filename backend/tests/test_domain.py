@@ -95,7 +95,7 @@ def test_kcc_command_is_safe_and_reproducible() -> None:
         "--batchsplit",
         "1",
         "--targetsize",
-        "20",
+        "19",
         "--tempdir",
         "--title",
         "My Volume",
@@ -103,6 +103,22 @@ def test_kcc_command_is_safe_and_reproducible() -> None:
         "/cache/job",
         "/cache/My Volume.cbz",
     ]
+
+
+def test_kcc_command_builds_one_koreader_cbz_for_the_connected_paperwhite() -> None:
+    command = build_kcc_command(
+        Path("/cache/Series.pdf"),
+        Path("/cache/job"),
+        ConversionPreset(),
+        "Series",
+        output_format="CBZ",
+    )
+
+    assert command[command.index("--profile") + 1] == "KPW"
+    assert command[command.index("--format") + 1] == "CBZ"
+    assert "--batchsplit" not in command
+    assert "--targetsize" not in command
+    assert "--nokepub" not in command
 
 
 def test_amazon_rejection_is_classified_by_documented_error_code() -> None:

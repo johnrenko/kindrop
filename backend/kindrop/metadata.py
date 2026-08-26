@@ -6,6 +6,9 @@ from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
 MAX_COMICINFO_BYTES = 1_048_576
+OPF_NS = "http://www.idpf.org/2007/opf"
+DC_NS = "http://purl.org/dc/elements/1.1/"
+CONTAINER_NS = "urn:oasis:names:tc:opendocument:xmlns:container"
 
 _BRACKETED_TAGS = re.compile(r"\[[^\]]*\]|\{[^}]*\}|\([^)]*\)")
 _VOLUME_MARKER = re.compile(r"\b(?:v(?:ol(?:ume)?)?|t(?:ome)?)[.\s]*0*(\d{1,4})\b", re.IGNORECASE)
@@ -91,6 +94,33 @@ class ComicMetadata:
         return fallback
 
 
+def _read_epub(path: Path) -> ComicMetadata:
+    try:
+        with ZipFile(path) as archive:
+            container = ElementTree.fromstring(archive.read("META-INF/container.xml"))
+            rootfile = container.find(f".//{{{CONTAINER_NS}}}rootfile")
+            if rootfile is None or not rootfile.get("full-path"):
+                raise ArchiveMetadataError("The EPUB has no rootfile declaration")
+            package = ElementTree.fromstring(archive.read(rootfile.get("full-path")))
+    except ArchiveMetadataError:
+        raise
+    except (BadZipFile, KeyError, ElementTree.ParseError) as error:
+        raise ArchiveMetadataError("The EPUB is corrupt or unsupported") from error
+
+    metadata = package.find(f"{{{OPF_NS}}}metadata")
+    if metadata is None:
+        return ComicMetadata()
+    title = _text(metadata, f"{{{DC_NS}}}title")
+    series = None
+    number = None
+    for item in metadata.findall(f"{{{OPF_NS}}}meta"):
+        if item.get("name") == "calibre:series":
+            series = (item.get("content") or "").strip()[:500] or None
+        elif item.get("name") == "calibre:series_index":
+            number = (item.get("content") or "").strip()[:500] or None
+    return ComicMetadata(title=title, series=series, number=number)
+
+
 def _text(root: ElementTree.Element, tag: str) -> str | None:
     value = root.findtext(tag)
     if not value:
@@ -160,6 +190,8 @@ def read_comic_metadata(path: Path) -> ComicMetadata:
         # PDFs carry no ComicInfo.xml; opening one only validates it for conversion.
         open_pdf_document(path).close()
         content = None
+    elif extension == ".epub":
+        return _read_epub(path)
     else:
-        raise ArchiveMetadataError("Only CBR, CBZ and PDF files are supported")
+        raise ArchiveMetadataError("Only CBR, CBZ, PDF and EPUB files are supported")
     return _parse_comicinfo(content) if content else ComicMetadata()

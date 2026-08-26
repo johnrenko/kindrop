@@ -1,9 +1,9 @@
 import asyncio
 import json
 import shutil
-from collections.abc import AsyncIterator, Generator
+from collections.abc import AsyncIterator, Callable, Generator
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
@@ -20,6 +20,7 @@ from .crypto import SecretStore
 from .database import Database
 from .domain import ConversionPreset
 from .google import GoogleDriveGateway, GoogleGmailGateway, GoogleServiceFactory
+from .kindle_ssh import KindleSshConfig, KindleSshTransport
 from .metadata import ArchiveMetadataError, format_kindle_title, volume_number
 from .models import (
     AppSettings,
@@ -46,10 +47,14 @@ from .schemas import (
     SettingsRead,
     SettingsUpdate,
     SetupStatus,
+    SshHostKeyRead,
+    SshStatus,
+    SshTrustRequest,
 )
 from .services import add_event
 
 KINDLE_PROFILES = [
+    {"id": "KPW", "name": "Kindle Paperwhite 1 / 2"},
     {"id": "K11", "name": "Kindle 11"},
     {"id": "KPW34", "name": "Kindle Paperwhite 3 / 4"},
     {"id": "KPW5", "name": "Kindle Paperwhite 5 / Signature Edition"},
@@ -61,8 +66,14 @@ KINDLE_PROFILES = [
 ]
 
 
+class CandidateOption(BaseModel):
+    candidate_id: str
+    optimize: bool | None = None
+
+
 class BatchCreate(BaseModel):
-    candidate_ids: list[str] = Field(min_length=1)
+    candidate_ids: list[str] = Field(default_factory=list)
+    candidate_options: list[CandidateOption] = Field(default_factory=list)
     preset: ConversionPreset
     merge_by_volume: bool = False
 
@@ -102,7 +113,14 @@ def _candidate_read(candidate: Candidate) -> CandidateRead:
         path=revision.path,
         size=revision.size,
         fingerprint=revision.fingerprint,
+        optimize=_candidate_optimize(candidate),
     )
+
+
+def _candidate_optimize(candidate: Candidate) -> bool:
+    if candidate.optimize is not None:
+        return candidate.optimize
+    return not candidate.revision.name.lower().endswith(".epub")
 
 
 def _job_read(job: Job) -> JobRead:
@@ -113,6 +131,9 @@ def _job_read(job: Job) -> JobRead:
                 {
                     "id": artifact.delivery.id,
                     "status": artifact.delivery.status,
+                    "transport": artifact.delivery.transport,
+                    "remote_path": artifact.delivery.remote_path,
+                    "remote_sha256": artifact.delivery.remote_sha256,
                     "filename": artifact.filename,
                     "part_number": artifact.part_number,
                     "total_parts": artifact.total_parts,
@@ -121,6 +142,8 @@ def _job_read(job: Job) -> JobRead:
                     "error_detail": artifact.delivery.error_detail,
                     "verification_url": artifact.delivery.verification_url,
                     "sent_at": artifact.delivery.sent_at,
+                    "capacity_unknown": artifact.delivery.status
+                    in {"pending", "waiting_for_kindle"},
                 }
             )
     return JobRead(
@@ -128,6 +151,8 @@ def _job_read(job: Job) -> JobRead:
         batch_id=job.batch_id,
         status=job.status,
         title=job.title,
+        optimize=job.optimize,
+        delivery_transport=job.delivery_transport,
         preset=ConversionPreset.model_validate(job.preset),
         merged_count=len(job.merged_candidate_ids) if job.merged_candidate_ids else None,
         progress=job.progress,
@@ -142,11 +167,16 @@ def create_app(
     database: Database,
     runtime: RuntimeSettings | None = None,
     service_factory: GoogleServiceFactory | None = None,
+    ssh_transport_factory: Callable[[KindleSshConfig], KindleSshTransport] | None = None,
 ) -> FastAPI:
     runtime = runtime or RuntimeSettings()
     app = FastAPI(title="Kindrop", version="0.1.0")
     app.state.database = database
     app.state.runtime = runtime
+    app.state.ssh_status = None
+
+    if ssh_transport_factory is None:
+        ssh_transport_factory = KindleSshTransport
 
     def session_dependency() -> Generator[Session, None, None]:
         with database.session() as session:
@@ -188,7 +218,13 @@ def create_app(
         settings = _settings(session)
         connected = bool(settings.encrypted_google_token)
         source = bool(settings.source_folder_id)
-        destination = bool(settings.kindle_email)
+        destination = bool(
+            settings.ssh_host
+            and settings.ssh_user
+            and settings.ssh_key_path
+            and settings.ssh_known_hosts_path
+            and settings.ssh_destination
+        )
         client = bool(settings.encrypted_google_client)
         return SetupStatus(
             client_configured=client,
@@ -196,6 +232,7 @@ def create_app(
             google_email=settings.google_email,
             source_folder_configured=source,
             kindle_destination_configured=destination,
+            ssh_destination_configured=destination,
             ready=client and connected and source and destination,
         )
 
@@ -280,6 +317,13 @@ def create_app(
             source_folder_id=settings.source_folder_id,
             source_folder_name=settings.source_folder_name,
             kindle_email=settings.kindle_email,
+            ssh_host=settings.ssh_host,
+            ssh_port=settings.ssh_port,
+            ssh_user=settings.ssh_user,
+            ssh_key_path=settings.ssh_key_path,
+            ssh_known_hosts_path=settings.ssh_known_hosts_path,
+            ssh_destination=settings.ssh_destination,
+            kindle_reserve_mib=settings.kindle_reserve_mib,
             preset=ConversionPreset.model_validate(settings.preset),
         )
 
@@ -291,9 +335,107 @@ def create_app(
         settings.source_folder_id = payload.source_folder_id
         settings.source_folder_name = payload.source_folder_name
         settings.kindle_email = str(payload.kindle_email) if payload.kindle_email else None
+        settings.ssh_host = payload.ssh_host
+        settings.ssh_port = payload.ssh_port
+        settings.ssh_user = payload.ssh_user
+        settings.ssh_key_path = payload.ssh_key_path
+        settings.ssh_known_hosts_path = payload.ssh_known_hosts_path
+        settings.ssh_destination = payload.ssh_destination.rstrip("/")
+        settings.kindle_reserve_mib = payload.kindle_reserve_mib
         settings.preset = payload.preset.model_dump(mode="json")
+        app.state.ssh_status = None
         session.commit()
         return read_settings(session)
+
+    def ssh_status_payload(settings: AppSettings) -> SshStatus:
+        cached = app.state.ssh_status
+        if cached is not None:
+            return cached
+        configured = bool(
+            settings.ssh_host
+            and settings.ssh_user
+            and settings.ssh_key_path
+            and settings.ssh_known_hosts_path
+            and settings.ssh_destination
+        )
+        return SshStatus(
+            configured=configured,
+            reachable=None,
+            host=settings.ssh_host,
+            port=settings.ssh_port,
+            destination=settings.ssh_destination,
+            free_bytes=None,
+            capacity_unknown=True,
+            detail=None,
+            tested_at=None,
+        )
+
+    @app.get("/api/ssh/status", response_model=SshStatus)
+    def ssh_status(session: Session = Depends(session_dependency)) -> SshStatus:
+        return ssh_status_payload(_settings(session))
+
+    def configured_ssh_transport(settings: AppSettings) -> KindleSshTransport:
+        return ssh_transport_factory(
+            KindleSshConfig(
+                host=settings.ssh_host,
+                port=settings.ssh_port,
+                user=settings.ssh_user,
+                key_path=Path(settings.ssh_key_path),
+                known_hosts_path=Path(settings.ssh_known_hosts_path),
+                destination_root=PurePosixPath(settings.ssh_destination),
+            )
+        )
+
+    @app.post("/api/ssh/host-key", response_model=SshHostKeyRead)
+    def inspect_ssh_host_key(
+        session: Session = Depends(session_dependency),
+    ) -> SshHostKeyRead:
+        try:
+            host_key = configured_ssh_transport(_settings(session)).inspect_host_key()
+        except Exception as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        trusted = configured_ssh_transport(_settings(session)).pinned_host_key()
+        return SshHostKeyRead(
+            fingerprint=host_key.fingerprint,
+            trusted_fingerprint=trusted.fingerprint if trusted else None,
+        )
+
+    @app.post("/api/ssh/trust", response_model=SshHostKeyRead)
+    def trust_ssh_host_key(
+        payload: SshTrustRequest,
+        session: Session = Depends(session_dependency),
+    ) -> SshHostKeyRead:
+        try:
+            host_key = configured_ssh_transport(_settings(session)).trust_host_key(
+                payload.fingerprint
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except Exception as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        app.state.ssh_status = None
+        return SshHostKeyRead(
+            fingerprint=host_key.fingerprint,
+            trusted_fingerprint=host_key.fingerprint,
+        )
+
+    @app.post("/api/ssh/test", response_model=SshStatus)
+    def test_ssh(session: Session = Depends(session_dependency)) -> SshStatus:
+        settings = _settings(session)
+        probe = configured_ssh_transport(settings).probe()
+        result = SshStatus(
+            configured=True,
+            reachable=probe.reachable,
+            host=settings.ssh_host,
+            port=settings.ssh_port,
+            destination=settings.ssh_destination,
+            free_bytes=probe.free_bytes,
+            capacity_unknown=probe.free_bytes is None,
+            detail=probe.detail,
+            tested_at=datetime.now(UTC),
+        )
+        app.state.ssh_status = result
+        return result
 
     @app.get("/api/kindle-profiles")
     def kindle_profiles() -> list[dict[str, str]]:
@@ -427,6 +569,8 @@ def create_app(
         provided = payload.model_fields_set
         if "title_override" in provided:
             candidate.title_override = (payload.title_override or "").strip() or None
+        if "optimize" in provided:
+            candidate.optimize = payload.optimize
         metadata_fields = {"series", "number", "author", "cover_url"} & provided
         if metadata_fields:
             if payload.cover_url and not payload.cover_url.startswith("https://"):
@@ -481,12 +625,23 @@ def create_app(
 
     @app.post("/api/batches", response_model=BatchResponse, status_code=status.HTTP_201_CREATED)
     def create_batch(payload: BatchCreate, session: Session = Depends(session_dependency)):
+        option_by_id = {
+            option.candidate_id: option.optimize for option in payload.candidate_options
+        }
+        if payload.candidate_ids and not set(option_by_id).issubset(payload.candidate_ids):
+            raise HTTPException(
+                status_code=422,
+                detail="Candidate options must belong to the selected Candidates",
+            )
+        candidate_ids = payload.candidate_ids or list(option_by_id)
+        if not candidate_ids:
+            raise HTTPException(status_code=422, detail="Select at least one Candidate")
         candidates = session.scalars(
             select(Candidate)
             .options(selectinload(Candidate.revision))
-            .where(Candidate.id.in_(payload.candidate_ids))
+            .where(Candidate.id.in_(candidate_ids))
         ).all()
-        if len(candidates) != len(set(payload.candidate_ids)) or any(
+        if len(candidates) != len(set(candidate_ids)) or any(
             candidate.status != "ready" for candidate in candidates
         ):
             raise HTTPException(
@@ -494,7 +649,12 @@ def create_app(
                 detail="Every selected candidate must be ready",
             )
         settings = _settings(session)
-        if not settings.kindle_email:
+        if not (
+            settings.ssh_host
+            and settings.ssh_key_path
+            and settings.ssh_known_hosts_path
+            and settings.ssh_destination
+        ):
             raise HTTPException(status_code=409, detail="Configure a Kindle Destination first")
 
         preset = payload.preset.model_dump(mode="json")
@@ -504,11 +664,10 @@ def create_app(
         volumes: dict[int, list[Candidate]] = {}
         singles: list[Candidate] = []
         for candidate in candidates:
-            # A PDF is already a full volume; merging assumes image archives.
-            mergeable = (
-                payload.merge_by_volume
-                and not candidate.revision.name.lower().endswith(".pdf")
-            )
+            # Merging builds an image archive and therefore only accepts comic archives.
+            mergeable = payload.merge_by_volume and Path(
+                candidate.revision.name
+            ).suffix.lower() in {".cbr", ".cbz"}
             volume = volume_number(candidate.revision.name) if mergeable else None
             if volume is None:
                 singles.append(candidate)
@@ -526,6 +685,13 @@ def create_app(
                     candidate_id=lead.id,
                     preset=preset,
                     title=title,
+                    optimize=all(
+                        option_by_id.get(member.id)
+                        if option_by_id.get(member.id) is not None
+                        else _candidate_optimize(member)
+                        for member in members
+                    ),
+                    delivery_transport="ssh",
                     merged_candidate_ids=[member.id for member in members],
                 )
             )
@@ -539,6 +705,12 @@ def create_app(
                     candidate_id=candidate.id,
                     preset=preset,
                     title=candidate.title_override or candidate.resolved_title,
+                    optimize=(
+                        option_by_id[candidate.id]
+                        if option_by_id.get(candidate.id) is not None
+                        else _candidate_optimize(candidate)
+                    ),
+                    delivery_transport="ssh",
                 )
             )
             candidate.status = "queued"
@@ -567,10 +739,13 @@ def create_app(
         source_job: Job,
         session: Session,
         preset: ConversionPreset | None = None,
+        transport: str | None = None,
     ) -> Job:
         member_ids = set(source_job.merged_candidate_ids or [source_job.candidate_id])
         active_jobs = session.scalars(
-            select(Job).where(Job.status.not_in(["sent", "failed", "cancelled"]))
+            select(Job).where(
+                Job.status.not_in(["sent", "copied_to_kindle", "failed", "cancelled"])
+            )
         ).all()
         if any(
             member_ids.intersection(active.merged_candidate_ids or [active.candidate_id])
@@ -591,6 +766,8 @@ def create_app(
             candidate_id=source_job.candidate_id,
             preset=preset_snapshot,
             title=source_job.title,
+            optimize=source_job.optimize,
+            delivery_transport=transport or source_job.delivery_transport,
             merged_candidate_ids=source_job.merged_candidate_ids,
         )
         session.add(replacement)
@@ -608,7 +785,7 @@ def create_app(
         )
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
-        if job.status not in {"sent", "failed", "cancelled"}:
+        if job.status not in {"sent", "copied_to_kindle", "failed", "cancelled"}:
             raise HTTPException(
                 status_code=409, detail="Only terminal jobs can be retried"
             )
@@ -620,8 +797,13 @@ def create_app(
         job = session.get(Job, job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
-        if job.status != "queued":
-            raise HTTPException(status_code=409, detail="Only queued jobs can be cancelled")
+        cancellable = {"queued", "ready_to_deliver", "waiting_for_kindle", "waiting_for_space"}
+        if job.status not in cancellable:
+            raise HTTPException(status_code=409, detail="This job can no longer be cancelled")
+        for artifact in job.artifacts:
+            Path(artifact.path).unlink(missing_ok=True)
+            if artifact.delivery and artifact.delivery.status not in {"copied_to_kindle", "sent"}:
+                artifact.delivery.status = "cancelled"
         job.status = "cancelled"
         job.completed_at = datetime.now(UTC)
         add_event(session, "job", job.id, "job.cancelled")
@@ -629,11 +811,14 @@ def create_app(
         for candidate in session.scalars(select(Candidate).where(Candidate.id.in_(member_ids))):
             candidate.status = "ready"
         jobs = session.scalars(select(Job).where(Job.batch_id == job.batch_id)).all()
-        if all(item.status in {"sent", "failed", "cancelled"} for item in jobs):
+        if all(
+            item.status in {"sent", "copied_to_kindle", "failed", "cancelled"}
+            for item in jobs
+        ):
             batch = session.get(Batch, job.batch_id)
             batch.status = (
                 "completed"
-                if all(item.status == "sent" for item in jobs)
+                if all(item.status in {"sent", "copied_to_kindle"} for item in jobs)
                 else "completed_with_errors"
             )
             batch.completed_at = datetime.now(UTC)
@@ -656,6 +841,71 @@ def create_app(
         if not delivery:
             raise HTTPException(status_code=404, detail="Delivery not found")
         replacement = clone_job(delivery.artifact.job, session)
+        return {"id": replacement.id, "status": replacement.status}
+
+    @app.post(
+        "/api/deliveries/{delivery_id}/email-fallback",
+        status_code=status.HTTP_201_CREATED,
+    )
+    def email_fallback(
+        delivery_id: str, session: Session = Depends(session_dependency)
+    ) -> dict[str, str]:
+        delivery = session.scalar(
+            select(Delivery)
+            .options(
+                selectinload(Delivery.artifact)
+                .selectinload(Artifact.job)
+                .selectinload(Job.candidate)
+            )
+            .where(Delivery.id == delivery_id)
+        )
+        if not delivery:
+            raise HTTPException(status_code=404, detail="Delivery not found")
+        if delivery.transport != "ssh":
+            raise HTTPException(
+                status_code=409,
+                detail="Only an SSH Delivery can use email fallback",
+            )
+        if delivery.status not in {
+            "pending",
+            "failed",
+            "action_required",
+            "waiting_for_kindle",
+            "waiting_for_space",
+        }:
+            raise HTTPException(
+                status_code=409,
+                detail="Only an incomplete SSH Delivery can use email fallback",
+            )
+        if not _settings(session).kindle_email:
+            raise HTTPException(
+                status_code=409,
+                detail="Configure a Send to Kindle email before using email fallback",
+            )
+        source_job = delivery.artifact.job
+        Path(delivery.artifact.path).unlink(missing_ok=True)
+        delivery.status = "cancelled"
+        source_job.status = "cancelled"
+        source_job.completed_at = datetime.now(UTC)
+        replacement = clone_job(source_job, session, transport="gmail")
+        source_batch = session.get(Batch, source_job.batch_id)
+        source_jobs = session.scalars(
+            select(Job).where(Job.batch_id == source_job.batch_id)
+        ).all()
+        if all(
+            item.status in {"sent", "copied_to_kindle", "failed", "cancelled"}
+            for item in source_jobs
+        ):
+            source_batch.status = "completed_with_errors"
+            source_batch.completed_at = datetime.now(UTC)
+        add_event(
+            session,
+            "delivery",
+            delivery.id,
+            "delivery.email_fallback_selected",
+            replacement_job_id=replacement.id,
+        )
+        session.commit()
         return {"id": replacement.id, "status": replacement.status}
 
     @app.delete("/api/cache", status_code=status.HTTP_204_NO_CONTENT)

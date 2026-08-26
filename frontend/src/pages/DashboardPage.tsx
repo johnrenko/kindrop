@@ -1,6 +1,7 @@
+import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, FolderSearch, Pause, Play, RefreshCw, Square } from "lucide-react";
+import { ArrowRight, Pause, Play, RefreshCw, Square } from "lucide-react";
 
 import { api } from "../api";
 import { EmptyState } from "../components/EmptyState";
@@ -10,6 +11,7 @@ import { queryKeys } from "../query";
 
 export function DashboardPage() {
   const client = useQueryClient();
+  const automaticScanStarted = useRef(false);
   const setup = useQuery({ queryKey: queryKeys.setup, queryFn: api.setup });
   const settings = useQuery({ queryKey: queryKeys.settings, queryFn: api.settings });
   const scans = useQuery({ queryKey: queryKeys.scans, queryFn: api.scans, refetchInterval: 5_000 });
@@ -34,6 +36,19 @@ export function DashboardPage() {
   const readyCount = candidates.data?.filter((candidate) => candidate.status === "ready").length ?? 0;
   const recentJobs = jobs.data?.slice(0, 4) ?? [];
 
+  useEffect(() => {
+    if (
+      automaticScanStarted.current ||
+      setup.isLoading ||
+      scans.isLoading ||
+      !setup.data?.ready ||
+      active ||
+      paused
+    ) return;
+    automaticScanStarted.current = true;
+    startScan.mutate();
+  }, [active, paused, scans.isLoading, setup.data?.ready, setup.isLoading, startScan]);
+
   return (
     <div className="page dashboard-page">
       <header className="page-header page-header--split">
@@ -49,8 +64,8 @@ export function DashboardPage() {
             onClick={() => startScan.mutate()}
             disabled={!setup.data?.ready || Boolean(active) || paused || startScan.isPending}
           >
-            <FolderSearch size={18} aria-hidden="true" />
-            {active ? "Scanning Drive…" : paused ? "Scan paused" : "Scan source folder"}
+            <RefreshCw size={18} aria-hidden="true" />
+            {active ? "Scanning Drive…" : paused ? "Scan paused" : "Refresh Drive"}
           </button>
           {startScan.error && <p className="form-error">{startScan.error.message}</p>}
         </div>
@@ -156,9 +171,8 @@ export function DashboardPage() {
 
       <footer className="desk-footer">
         <RefreshCw size={15} aria-hidden="true" />
-        Kindrop checks Amazon responses while this app is running.
+        Kindrop scans once when the desk opens. Refresh whenever Drive changes.
       </footer>
     </div>
   );
 }
-

@@ -7,11 +7,25 @@ from .kcc import build_kcc_command
 
 class KccRunner:
     def run(
-        self, source: Path, output_directory: Path, preset: ConversionPreset, title: str
+        self,
+        source: Path,
+        output_directory: Path,
+        preset: ConversionPreset,
+        title: str,
+        *,
+        target_size_mb: int | None = None,
+        output_format: str = "EPUB",
     ) -> list[Path]:
         output_directory.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
-            build_kcc_command(source, output_directory, preset, title),
+            build_kcc_command(
+                source,
+                output_directory,
+                preset,
+                title,
+                target_size_mb=target_size_mb or 19,
+                output_format=output_format,
+            ),
             check=False,
             capture_output=True,
             text=True,
@@ -20,4 +34,4 @@ class KccRunner:
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "KCC exited without details")[-4000:]
             raise RuntimeError(f"KCC conversion failed: {detail}")
-        return sorted(output_directory.glob("*.epub"))
+        return sorted(output_directory.glob(f"*.{output_format.lower()}"))

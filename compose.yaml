@@ -21,6 +21,7 @@ x-kindrop-service: &kindrop-service
     - kindrop-data:/data
     - kindrop-cache:/cache
     - ./secrets/kindrop.key:/run/secrets/kindrop.key:ro
+    - ${KINDROP_SSH_KEY_FILE:?Set KINDROP_SSH_KEY_FILE in .env}:/run/secrets/kindle_ssh_key:ro
   tmpfs:
     - /tmp:size=256m,mode=1777
 

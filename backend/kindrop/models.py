@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -39,10 +40,23 @@ class AppSettings(Base):
     source_folder_id: Mapped[str | None] = mapped_column(String(200))
     source_folder_name: Mapped[str | None] = mapped_column(String(500))
     kindle_email: Mapped[str | None] = mapped_column(String(320))
+    ssh_host: Mapped[str] = mapped_column(String(253), default="192.168.1.53")
+    ssh_port: Mapped[int] = mapped_column(Integer, default=2222)
+    ssh_user: Mapped[str] = mapped_column(String(100), default="root")
+    ssh_key_path: Mapped[str] = mapped_column(
+        String(2000), default="/run/secrets/kindle_ssh_key"
+    )
+    ssh_known_hosts_path: Mapped[str] = mapped_column(
+        String(2000), default="/data/kindle_known_hosts"
+    )
+    ssh_destination: Mapped[str] = mapped_column(
+        String(2000), default="/mnt/us/documents/KOReader/Kindrop"
+    )
+    kindle_reserve_mib: Mapped[int] = mapped_column(Integer, default=100)
     preset: Mapped[dict[str, Any]] = mapped_column(
         JSON,
         default=lambda: {
-            "kindle_profile": "KPW6",
+            "kindle_profile": "KPW",
             "reading_direction": "rtl",
             "spread_mode": "both",
             "crop_mode": "margins_and_page_numbers",
@@ -92,6 +106,7 @@ class Candidate(Base):
     comic_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     resolved_title: Mapped[str] = mapped_column(String(500))
     title_override: Mapped[str | None] = mapped_column(String(500))
+    optimize: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     cache_path: Mapped[str | None] = mapped_column(String(2000))
     cache_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
@@ -119,6 +134,8 @@ class Job(Base):
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
     preset: Mapped[dict[str, Any]] = mapped_column(JSON)
     title: Mapped[str] = mapped_column(String(500))
+    optimize: Mapped[bool] = mapped_column(Boolean, default=True)
+    delivery_transport: Mapped[str] = mapped_column(String(16), default="ssh")
     merged_candidate_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text)
@@ -151,6 +168,9 @@ class Delivery(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     artifact_id: Mapped[str] = mapped_column(ForeignKey("artifacts.id"), unique=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    transport: Mapped[str] = mapped_column(String(16), default="ssh")
+    remote_path: Mapped[str | None] = mapped_column(String(2000))
+    remote_sha256: Mapped[str | None] = mapped_column(String(64))
     gmail_message_id: Mapped[str | None] = mapped_column(String(200))
     error_code: Mapped[str | None] = mapped_column(String(20))
     error_detail: Mapped[str | None] = mapped_column(Text)

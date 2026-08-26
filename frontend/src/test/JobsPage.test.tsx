@@ -59,6 +59,35 @@ function renderJobs() {
 }
 
 describe("Jobs", () => {
+  it("shows SSH delivery states and offers email fallback with capacity confirmation", async () => {
+    const waitingJob = {
+      ...job,
+      status: "waiting_for_kindle",
+      deliveries: [{
+        ...job.deliveries[0],
+        status: "waiting_for_space",
+        error_detail: "Wake the Kindle and free some storage.",
+        capacity_unknown: true,
+      }],
+    };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      if (init?.method === "POST") return Response.json({ status: "pending" });
+      return Response.json([waitingJob]);
+    });
+    renderJobs();
+
+    expect((await screen.findAllByText("Waiting for Kindle")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Waiting for space").length).toBeGreaterThan(0);
+    await userEvent.click(screen.getByRole("button", { name: "Send by email instead" }));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/capacity.*unknown/i));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/deliveries/delivery-1/email-fallback",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("shows a verifying badge and keeps the manual resend available", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json([job]));
     renderJobs();

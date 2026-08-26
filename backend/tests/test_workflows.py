@@ -4,13 +4,16 @@ from zipfile import ZipFile
 
 from kindrop.database import Database
 from kindrop.domain import ConversionPreset
+from kindrop.kindle_ssh import KindleDeliveryReceipt, KindleProbe
 from kindrop.models import AppSettings, Batch, Candidate, Job, Revision, Scan
 from kindrop.services import (
+    MAX_EPUB_BYTES,
     AmbiguousSendError,
     DriveComic,
     JobProcessor,
     PermanentSendError,
     ScanProcessor,
+    SshBatchDeliverer,
     TransientSendError,
 )
 
@@ -40,10 +43,19 @@ class FakeDrive:
 
 class FakeKcc:
     def run(
-        self, source: Path, output_directory: Path, preset: ConversionPreset, title: str
+        self,
+        source: Path,
+        output_directory: Path,
+        preset: ConversionPreset,
+        title: str,
+        *,
+        target_size_mb: int = 19,
+        output_format: str = "EPUB",
     ) -> list[Path]:
         assert source.exists()
         assert preset.reading_direction.value == "rtl"
+        assert target_size_mb in (18, 19)
+        assert output_format == "EPUB"
         output_directory.mkdir(parents=True, exist_ok=True)
         first = output_directory / f"{title} - Part 1.epub"
         second = output_directory / f"{title} - Part 2.epub"
@@ -96,7 +108,7 @@ def make_cbz(path: Path) -> None:
         comic.writestr("001.jpg", b"image")
 
 
-def make_ready_job(database: Database, archive: Path) -> str:
+def make_ready_job(database: Database, archive: Path, *, transport: str = "gmail") -> str:
     with database.session() as session:
         session.add(
             AppSettings(
@@ -131,10 +143,28 @@ def make_ready_job(database: Database, archive: Path) -> str:
             candidate_id=candidate.id,
             preset=batch.preset,
             title="Volume Seven",
+            delivery_transport=transport,
         )
         session.add(job)
         session.commit()
         return job.id
+
+
+class FakeKindle:
+    def __init__(self, free_bytes: int) -> None:
+        self.free_bytes = free_bytes
+        self.delivered: list[tuple[str, str, bool]] = []
+
+    def probe(self) -> KindleProbe:
+        return KindleProbe(reachable=True, free_bytes=self.free_bytes)
+
+    def deliver(self, local_path: Path, relative_path: str, *, replace: bool = False):
+        self.delivered.append((local_path.name, relative_path, replace))
+        return KindleDeliveryReceipt(
+            remote_path=f"/mnt/us/documents/KOReader/Kindrop/{relative_path}",
+            sha256="a" * 64,
+            size_bytes=local_path.stat().st_size,
+        )
 
 
 def run_job(
@@ -389,6 +419,7 @@ def test_job_converts_sends_each_part_and_purges_temporary_files(tmp_path: Path)
             candidate_id=candidate.id,
             preset=batch.preset,
             title="Volume Seven",
+            delivery_transport="gmail",
         )
         session.add(job)
         session.commit()
@@ -428,6 +459,207 @@ def test_job_converts_sends_each_part_and_purges_temporary_files(tmp_path: Path)
     assert not archive.exists()
 
 
+def test_ssh_job_prepares_one_cbz_then_copies_it_with_verified_transport(tmp_path: Path) -> None:
+    archive = tmp_path / "source.cbz"
+    make_cbz(archive)
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    job_id = make_ready_job(database, archive, transport="ssh")
+    gmail = FakeGmail()
+
+    class KoreaderKcc:
+        def run(
+            self,
+            source: Path,
+            output_directory: Path,
+            preset: ConversionPreset,
+            title: str,
+            *,
+            output_format: str,
+            target_size_mb: int | None = None,
+        ) -> list[Path]:
+            assert source.exists()
+            assert preset.kindle_profile == "KPW"
+            assert output_format == "CBZ"
+            assert target_size_mb is None
+            output_directory.mkdir(parents=True, exist_ok=True)
+            artifact = output_directory / f"{title}.cbz"
+            artifact.write_bytes(b"optimized")
+            return [artifact]
+
+    JobProcessor(
+        database=database,
+        drive=FakeDrive(archive),
+        kcc=KoreaderKcc(),
+        gmail=gmail,
+        cache_root=tmp_path / "cache",
+        wait_between_deliveries=lambda: None,
+    ).run(job_id)
+
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        batch_id = job.batch_id
+        assert job.status == "ready_to_deliver"
+        assert job.artifacts[0].filename.endswith(".cbz")
+        assert job.artifacts[0].delivery.transport == "ssh"
+    assert gmail.sent == []
+
+    kindle = FakeKindle(free_bytes=500 * 1024 * 1024)
+    SshBatchDeliverer(database, transport_for=lambda _settings: kindle).run(batch_id)
+
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        delivery = job.artifacts[0].delivery
+        assert job.status == "copied_to_kindle"
+        assert delivery.status == "copied_to_kindle"
+        assert delivery.remote_sha256 == "a" * 64
+        assert delivery.remote_path.endswith("/Volume Seven.cbz")
+    assert kindle.delivered == [("Volume Seven.cbz", "_Unsorted/Volume Seven.cbz", False)]
+    assert not archive.exists()
+
+
+def test_ssh_batch_waits_without_copying_when_reserve_would_be_breached(tmp_path: Path) -> None:
+    archive = tmp_path / "source.cbz"
+    make_cbz(archive)
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    job_id = make_ready_job(database, archive, transport="ssh")
+
+    class SmallKcc:
+        def run(self, source, output_directory, preset, title, **_kwargs):
+            output_directory.mkdir(parents=True, exist_ok=True)
+            artifact = output_directory / f"{title}.cbz"
+            artifact.write_bytes(b"optimized")
+            return [artifact]
+
+    JobProcessor(
+        database=database,
+        drive=FakeDrive(archive),
+        kcc=SmallKcc(),
+        gmail=FakeGmail(),
+        cache_root=tmp_path / "cache",
+        wait_between_deliveries=lambda: None,
+    ).run(job_id)
+    with database.session() as session:
+        batch_id = session.get(Job, job_id).batch_id
+
+    kindle = FakeKindle(free_bytes=100 * 1024 * 1024)
+    SshBatchDeliverer(database, transport_for=lambda _settings: kindle).run(batch_id)
+
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        assert job.status == "waiting_for_space"
+        assert job.artifacts[0].delivery.status == "waiting_for_space"
+    assert kindle.delivered == []
+
+
+def test_job_retries_an_oversized_artifact_with_more_kcc_headroom(tmp_path: Path) -> None:
+    archive = tmp_path / "source.cbz"
+    make_cbz(archive)
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    job_id = make_ready_job(database, archive)
+    gmail = FakeGmail()
+
+    class RetryingKcc:
+        def __init__(self) -> None:
+            self.targets: list[int] = []
+
+        def run(
+            self,
+            source: Path,
+            output_directory: Path,
+            preset: ConversionPreset,
+            title: str,
+            *,
+            target_size_mb: int,
+            output_format: str = "EPUB",
+        ) -> list[Path]:
+            assert source.exists()
+            assert output_format == "EPUB"
+            if self.targets:
+                assert not output_directory.exists(), "the oversized attempt must be discarded"
+            self.targets.append(target_size_mb)
+            output_directory.mkdir(parents=True)
+            artifact = output_directory / f"{title}.epub"
+            if target_size_mb == 19:
+                with artifact.open("wb") as handle:
+                    handle.truncate(MAX_EPUB_BYTES + 1)
+            else:
+                artifact.write_bytes(b"epub")
+            return [artifact]
+
+    kcc = RetryingKcc()
+    JobProcessor(
+        database=database,
+        drive=FakeDrive(archive),
+        kcc=kcc,
+        gmail=gmail,
+        cache_root=tmp_path / "cache",
+        wait_between_deliveries=lambda: None,
+    ).run(job_id)
+
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        assert job.status == "sent"
+        assert [artifact.size for artifact in job.artifacts] == [4]
+    assert kcc.targets == [19, 18]
+    assert len(gmail.sent) == 1
+
+
+def test_job_retains_the_final_oversized_artifact_with_retry_diagnostics(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "source.cbz"
+    make_cbz(archive)
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    job_id = make_ready_job(database, archive)
+    gmail = FakeGmail()
+
+    class OversizedKcc:
+        def __init__(self) -> None:
+            self.targets: list[int] = []
+            self.paths: list[Path] = []
+
+        def run(
+            self,
+            source: Path,
+            output_directory: Path,
+            preset: ConversionPreset,
+            title: str,
+            *,
+            target_size_mb: int,
+            output_format: str = "EPUB",
+        ) -> list[Path]:
+            assert source.exists()
+            assert output_format == "EPUB"
+            self.targets.append(target_size_mb)
+            output_directory.mkdir(parents=True)
+            artifact = output_directory / f"{title}-{target_size_mb}.epub"
+            with artifact.open("wb") as handle:
+                handle.truncate(MAX_EPUB_BYTES + 1)
+            self.paths.append(artifact)
+            return [artifact]
+
+    kcc = OversizedKcc()
+    JobProcessor(
+        database=database,
+        drive=FakeDrive(archive),
+        kcc=kcc,
+        gmail=gmail,
+        cache_root=tmp_path / "cache",
+        wait_between_deliveries=lambda: None,
+    ).run(job_id)
+
+    with database.session() as session:
+        job = session.get(Job, job_id)
+        assert job.status == "failed"
+        assert job.artifacts == []
+        assert "20,971,521 bytes" in job.error
+        assert "target sizes 19 MB and 18 MB" in job.error
+    assert kcc.targets == [19, 18]
+    assert not kcc.paths[0].exists()
+    assert kcc.paths[1].exists()
+    assert gmail.sent == []
+
+
 def test_merged_job_builds_one_volume_and_marks_every_chapter_sent(tmp_path: Path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'test.db'}")
     gmail = FakeGmail()
@@ -443,11 +675,25 @@ def test_merged_job_builds_one_volume_and_marks_every_chapter_sent(tmp_path: Pat
             self.sources: list[tuple[str, list[str]]] = []
 
         def run(
-            self, source: Path, output_directory: Path, preset: ConversionPreset, title: str
+            self,
+            source: Path,
+            output_directory: Path,
+            preset: ConversionPreset,
+            title: str,
+            *,
+            target_size_mb: int = 19,
+            output_format: str = "EPUB",
         ) -> list[Path]:
             with ZipFile(source) as merged:
                 self.sources.append((source.name, merged.namelist()))
-            return super().run(source, output_directory, preset, title)
+            return super().run(
+                source,
+                output_directory,
+                preset,
+                title,
+                target_size_mb=target_size_mb,
+                output_format=output_format,
+            )
 
     with database.session() as session:
         session.add(
@@ -487,6 +733,7 @@ def test_merged_job_builds_one_volume_and_marks_every_chapter_sent(tmp_path: Pat
             preset=batch.preset,
             title="Naruto, Tome 02",
             merged_candidate_ids=candidate_ids,
+            delivery_transport="gmail",
         )
         session.add(job)
         session.commit()

@@ -8,7 +8,7 @@ from kindrop.google import GmailMessage
 from kindrop.mail_monitor import AmazonMailMonitor, AmazonVerificationClient
 from kindrop.models import Artifact, Batch, Candidate, Delivery, Job, Revision
 
-SENT_BASE = datetime(2026, 8, 17, 15, 1, tzinfo=UTC)
+SENT_BASE = datetime.now(UTC) - timedelta(minutes=10)
 
 VERIFICATION_BODY = (
     "Cher client, chère cliente, Nous avons reçu une demande d'envoi d'un document "
@@ -62,6 +62,7 @@ def _add_delivery(session, index: int, sent_at: datetime) -> str:
         preset={},
         title=f"Vol {index}",
         status="sent",
+        delivery_transport="gmail",
     )
     session.add(job)
     session.flush()
@@ -73,7 +74,12 @@ def _add_delivery(session, index: int, sent_at: datetime) -> str:
     )
     session.add(artifact)
     session.flush()
-    delivery = Delivery(artifact_id=artifact.id, status="sent_unconfirmed", sent_at=sent_at)
+    delivery = Delivery(
+        artifact_id=artifact.id,
+        status="sent_unconfirmed",
+        transport="gmail",
+        sent_at=sent_at,
+    )
     session.add(delivery)
     session.flush()
     return delivery.id

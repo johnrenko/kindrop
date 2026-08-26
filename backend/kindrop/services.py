@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.utils import make_msgid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from sqlalchemy import select
@@ -16,6 +16,7 @@ from .archives import build_volume_archive
 from .database import Database
 from .domain import ConversionPreset, revision_fingerprint
 from .epub import EpubMetadataError, apply_epub_metadata
+from .kindle_ssh import KindleCollisionError
 from .metadata import ArchiveMetadataError, clean_title, read_comic_metadata, volume_number
 from .models import (
     AppSettings,
@@ -31,6 +32,7 @@ from .models import (
 )
 
 MAX_EPUB_BYTES = 20 * 1024 * 1024
+KCC_TARGET_SIZES_MB = (19, 18)
 CACHE_TTL = timedelta(hours=24)
 MAX_SEND_ATTEMPTS = 3
 SENT_PROBE_COUNT = 3
@@ -56,8 +58,21 @@ class DriveGateway(Protocol):
 
 class KccGateway(Protocol):
     def run(
-        self, source: Path, output_directory: Path, preset: ConversionPreset, title: str
+        self,
+        source: Path,
+        output_directory: Path,
+        preset: ConversionPreset,
+        title: str,
+        *,
+        target_size_mb: int | None = None,
+        output_format: str = "EPUB",
     ) -> list[Path]: ...
+
+
+class KindleGateway(Protocol):
+    def probe(self): ...
+
+    def deliver(self, local_path: Path, relative_path: str, *, replace: bool = False): ...
 
 
 class GmailGateway(Protocol):
@@ -93,6 +108,12 @@ def _artifact_filename(title: str, part_number: int, total_parts: int) -> str:
     safe = "".join(" " if character in '/\\:*?"<>|' else character for character in stem)
     safe = " ".join(safe.split()).strip(". ")
     return f"{safe[:120] or 'kindrop'}.epub"
+
+
+def _delivery_filename(title: str, suffix: str) -> str:
+    safe = "".join(" " if character in '/\\:*?\"<>|' else character for character in title)
+    safe = " ".join(safe.split()).strip(". ")
+    return f"{safe[:120] or 'kindrop'}{suffix.lower()}"
 
 
 def _checksum(path: Path) -> str:
@@ -302,14 +323,20 @@ class JobProcessor:
                 if job and job.status != "queued":
                     return
                 settings = session.get(AppSettings, 1)
-                if not job or not settings or not settings.kindle_email:
+                if not job or not settings:
                     raise ValueError("Configure a Kindle Destination before processing jobs")
+                if job.delivery_transport == "gmail" and not settings.kindle_email:
+                    raise ValueError("Configure the Gmail fallback before using it")
+                if job.delivery_transport == "ssh" and not settings.ssh_host:
+                    raise ValueError("Configure the Kindle SSH Destination before processing jobs")
                 job.status = "downloading"
                 job.started_at = datetime.now(UTC)
                 job.progress = 5
                 add_event(session, "job", job.id, "job.started")
                 session.commit()
                 recipient = settings.kindle_email
+                transport = job.delivery_transport
+                optimize = job.optimize
                 source_path = Path(job.candidate.cache_path) if job.candidate.cache_path else None
                 revision = job.candidate.revision
                 title = job.title
@@ -337,18 +364,49 @@ class JobProcessor:
                 add_event(session, "job", job.id, "job.converting")
                 session.commit()
 
-            artifact_paths = self.kcc.run(source_path, output_directory, preset, title)
-            if not artifact_paths:
-                raise RuntimeError("KCC did not produce an EPUB artifact")
-            for path in artifact_paths:
-                if path.suffix.lower() != ".epub" or not path.is_file():
-                    raise RuntimeError("KCC produced an unsupported artifact")
+            if transport == "ssh":
+                self._prepare_ssh_artifact(
+                    job_id,
+                    source_path,
+                    output_directory,
+                    preset,
+                    title,
+                    optimize=optimize,
+                )
+                return
 
-            self._apply_metadata(job_id, artifact_paths, title, comic_metadata)
+            artifact_paths: list[Path] = []
+            for attempt, target_size_mb in enumerate(KCC_TARGET_SIZES_MB, start=1):
+                artifact_paths = self.kcc.run(
+                    source_path,
+                    output_directory,
+                    preset,
+                    title,
+                    target_size_mb=target_size_mb,
+                )
+                if not artifact_paths:
+                    raise RuntimeError("KCC did not produce an EPUB artifact")
+                for path in artifact_paths:
+                    if path.suffix.lower() != ".epub" or not path.is_file():
+                        raise RuntimeError("KCC produced an unsupported artifact")
 
-            for path in artifact_paths:
-                if path.stat().st_size > MAX_EPUB_BYTES:
-                    raise RuntimeError("KCC produced an EPUB larger than the 20 MB safety limit")
+                self._apply_metadata(job_id, artifact_paths, title, comic_metadata)
+                oversized_paths = [
+                    path for path in artifact_paths if path.stat().st_size > MAX_EPUB_BYTES
+                ]
+                if not oversized_paths:
+                    break
+                if attempt < len(KCC_TARGET_SIZES_MB):
+                    shutil.rmtree(output_directory)
+                    continue
+                largest_size = max(path.stat().st_size for path in oversized_paths)
+                attempted_targets = " and ".join(
+                    f"{target} MB" for target in KCC_TARGET_SIZES_MB
+                )
+                raise RuntimeError(
+                    "KCC produced an EPUB larger than the 20 MB safety limit "
+                    f"({largest_size:,} bytes after target sizes {attempted_targets})"
+                )
 
             renamed_paths: list[Path] = []
             for index, path in enumerate(artifact_paths, start=1):
@@ -374,7 +432,7 @@ class JobProcessor:
                     )
                     session.add(artifact)
                     session.flush()
-                    session.add(Delivery(artifact_id=artifact.id))
+                    session.add(Delivery(artifact_id=artifact.id, transport="gmail"))
                 session.commit()
 
             for index, path in enumerate(artifact_paths, start=1):
@@ -415,6 +473,57 @@ class JobProcessor:
             self._update_batch(job_id)
         except Exception as error:
             self._fail(job_id, str(error))
+
+    def _prepare_ssh_artifact(
+        self,
+        job_id: str,
+        source_path: Path,
+        output_directory: Path,
+        preset: ConversionPreset,
+        title: str,
+        *,
+        optimize: bool,
+    ) -> None:
+        # A restarted worker may requeue this job; discard partial conversion leftovers.
+        shutil.rmtree(output_directory, ignore_errors=True)
+        output_directory.mkdir(parents=True, exist_ok=True)
+        if optimize or source_path.suffix.lower() in {".cbr", ".cbz"}:
+            artifact_paths = self.kcc.run(
+                source_path,
+                output_directory,
+                preset,
+                title,
+                output_format="CBZ",
+            )
+            expected_suffix = ".cbz"
+        else:
+            expected_suffix = source_path.suffix.lower()
+            target = output_directory / _delivery_filename(title, expected_suffix)
+            shutil.copy2(source_path, target)
+            artifact_paths = [target]
+        if len(artifact_paths) != 1:
+            raise RuntimeError("KOReader delivery requires exactly one artifact")
+        path = artifact_paths[0]
+        if path.suffix.lower() != expected_suffix or not path.is_file():
+            raise RuntimeError("KCC produced an unsupported KOReader artifact")
+        target = path.with_name(_delivery_filename(title, expected_suffix))
+        if target != path:
+            path.replace(target)
+        with self.database.session() as session:
+            job = session.get(Job, job_id)
+            artifact = Artifact(
+                job_id=job.id,
+                filename=target.name,
+                path=str(target),
+                size=target.stat().st_size,
+            )
+            session.add(artifact)
+            session.flush()
+            session.add(Delivery(artifact_id=artifact.id, transport="ssh"))
+            job.status = "ready_to_deliver"
+            job.progress = 70
+            add_event(session, "job", job.id, "job.ready_to_deliver")
+            session.commit()
 
     def _prepare_merged_source(self, job_id: str, member_ids: list[str]) -> Path:
         """Download every member chapter and merge them into one CBZ source."""
@@ -661,3 +770,229 @@ class JobProcessor:
                 )
                 batch.completed_at = datetime.now(UTC)
                 session.commit()
+
+
+class SshBatchDeliverer:
+    """Publish a fully prepared SSH batch only after one aggregate space check."""
+
+    def __init__(
+        self,
+        database: Database,
+        *,
+        transport_for: Callable[[AppSettings], KindleGateway],
+        cache_root: Path | None = None,
+    ) -> None:
+        self.database = database
+        self.transport_for = transport_for
+        self.cache_root = cache_root
+
+    def run(self, batch_id: str) -> None:
+        with self.database.session() as session:
+            jobs = session.scalars(
+                select(Job)
+                .options(
+                    selectinload(Job.artifacts).selectinload(Artifact.delivery),
+                    selectinload(Job.candidate).selectinload(Candidate.revision),
+                )
+                .where(Job.batch_id == batch_id, Job.delivery_transport == "ssh")
+                .order_by(Job.created_at)
+            ).all()
+            pending = [
+                job
+                for job in jobs
+                if job.status not in {"copied_to_kindle", "failed", "cancelled"}
+            ]
+            if not pending or any(
+                job.status not in {"ready_to_deliver", "waiting_for_kindle", "waiting_for_space"}
+                for job in pending
+            ):
+                return
+            settings = session.get(AppSettings, 1)
+            if settings is None:
+                return
+            artifact_size = sum(
+                artifact.size for job in pending for artifact in job.artifacts
+            )
+            reserve_bytes = settings.kindle_reserve_mib * 1024 * 1024
+
+        transport = self.transport_for(settings)
+        probe = transport.probe()
+        if not probe.reachable or probe.free_bytes is None:
+            self._wait(batch_id, "waiting_for_kindle", probe.detail or "Kindle is unreachable")
+            return
+        if probe.free_bytes < artifact_size + reserve_bytes:
+            required = artifact_size + reserve_bytes
+            self._wait(
+                batch_id,
+                "waiting_for_space",
+                f"Kindle needs {required:,} free bytes for this batch and its reserve",
+            )
+            return
+
+        for job in pending:
+            if not self._deliver_job(job.id, transport, settings):
+                break
+        self._finish_batch(batch_id)
+
+    def _deliver_job(
+        self, job_id: str, transport: KindleGateway, settings: AppSettings
+    ) -> bool:
+        with self.database.session() as session:
+            job = session.scalar(
+                select(Job)
+                .options(
+                    selectinload(Job.artifacts).selectinload(Artifact.delivery),
+                    selectinload(Job.candidate).selectinload(Candidate.revision),
+                )
+                .where(Job.id == job_id)
+            )
+            if job is None or len(job.artifacts) != 1:
+                return False
+            artifact = job.artifacts[0]
+            path = Path(artifact.path)
+            tracked_path = self._tracked_path(
+                session,
+                job.candidate.revision.drive_file_id,
+                job.id,
+                settings.ssh_destination,
+            )
+            relative_path = tracked_path or self._relative_path(job, artifact)
+            batch_id = job.batch_id
+            job.status = "sending"
+            artifact.delivery.status = "pending"
+            session.commit()
+
+        try:
+            receipt = transport.deliver(path, relative_path, replace=tracked_path is not None)
+        except KindleCollisionError as error:
+            with self.database.session() as session:
+                job = session.get(Job, job_id)
+                delivery = job.artifacts[0].delivery
+                job.status = "failed"
+                job.error = str(error)
+                job.completed_at = datetime.now(UTC)
+                delivery.status = "failed"
+                delivery.error_detail = str(error)
+                add_event(session, "delivery", delivery.id, "delivery.failed", message=str(error))
+                session.commit()
+            return False
+        except Exception as error:
+            self._wait(batch_id, "waiting_for_kindle", str(error))
+            return False
+
+        with self.database.session() as session:
+            job = session.scalar(
+                select(Job)
+                .options(
+                    selectinload(Job.artifacts).selectinload(Artifact.delivery),
+                    selectinload(Job.candidate).selectinload(Candidate.revision),
+                )
+                .where(Job.id == job_id)
+            )
+            artifact = job.artifacts[0]
+            delivery = artifact.delivery
+            delivery.status = "copied_to_kindle"
+            delivery.remote_path = receipt.remote_path
+            delivery.remote_sha256 = receipt.sha256
+            delivery.sent_at = datetime.now(UTC)
+            delivery.error_detail = None
+            job.status = "copied_to_kindle"
+            job.progress = 100
+            job.completed_at = datetime.now(UTC)
+            member_ids = job.merged_candidate_ids or [job.candidate_id]
+            members = session.scalars(
+                select(Candidate)
+                .options(selectinload(Candidate.revision))
+                .where(Candidate.id.in_(member_ids))
+            ).all()
+            for member in members:
+                if member.cache_path:
+                    Path(member.cache_path).unlink(missing_ok=True)
+                member.cache_path = None
+                member.cache_expires_at = None
+                member.status = "sent"
+                member.revision.status = "sent"
+            add_event(session, "delivery", delivery.id, "delivery.copied_to_kindle")
+            session.commit()
+        path.unlink(missing_ok=True)
+        parent = path.parent
+        if parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+        if self.cache_root is not None:
+            shutil.rmtree(self.cache_root / "sources" / job_id, ignore_errors=True)
+        return True
+
+    def _tracked_path(
+        self,
+        session,
+        drive_file_id: str,
+        current_job_id: str,
+        destination_root: str,
+    ) -> str | None:
+        remote_path = session.scalar(
+            select(Delivery.remote_path)
+            .join(Artifact, Delivery.artifact_id == Artifact.id)
+            .join(Job, Artifact.job_id == Job.id)
+            .join(Candidate, Job.candidate_id == Candidate.id)
+            .join(Revision, Candidate.revision_id == Revision.id)
+            .where(
+                Revision.drive_file_id == drive_file_id,
+                Job.id != current_job_id,
+                Delivery.status == "copied_to_kindle",
+                Delivery.remote_path.is_not(None),
+            )
+            .order_by(Delivery.updated_at.desc())
+            .limit(1)
+        )
+        if not remote_path:
+            return None
+        try:
+            return str(PurePosixPath(remote_path).relative_to(PurePosixPath(destination_root)))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _relative_path(job: Job, artifact: Artifact) -> str:
+        metadata = dict(job.candidate.comic_metadata or {})
+        series = _delivery_filename(metadata.get("series") or "_Unsorted", "")
+        title = Path(artifact.filename).stem
+        number = str(metadata.get("number") or "").strip()
+        if number.isdigit():
+            title = f"{int(number):03d} - {title}"
+        return str(PurePosixPath(series) / f"{title}{Path(artifact.filename).suffix}")
+
+    def _wait(self, batch_id: str, status: str, detail: str) -> None:
+        with self.database.session() as session:
+            jobs = session.scalars(
+                select(Job).where(
+                    Job.batch_id == batch_id,
+                    Job.delivery_transport == "ssh",
+                    Job.status.not_in(["copied_to_kindle", "failed", "cancelled"]),
+                )
+            ).all()
+            for job in jobs:
+                job.status = status
+                job.error = detail
+                for artifact in job.artifacts:
+                    if artifact.delivery:
+                        artifact.delivery.status = status
+                        artifact.delivery.error_detail = detail
+                add_event(session, "job", job.id, f"job.{status}", message=detail)
+            session.commit()
+
+    def _finish_batch(self, batch_id: str) -> None:
+        with self.database.session() as session:
+            jobs = session.scalars(select(Job).where(Job.batch_id == batch_id)).all()
+            if not jobs or not all(
+                job.status in {"copied_to_kindle", "sent", "failed", "cancelled"}
+                for job in jobs
+            ):
+                return
+            batch = session.get(Batch, batch_id)
+            batch.status = (
+                "completed"
+                if all(job.status in {"copied_to_kindle", "sent"} for job in jobs)
+                else "completed_with_errors"
+            )
+            batch.completed_at = datetime.now(UTC)
+            session.commit()

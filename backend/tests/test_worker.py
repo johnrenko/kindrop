@@ -93,6 +93,28 @@ def test_drain_queued_jobs_checks_mail_between_jobs(tmp_path: Path) -> None:
     assert checks_before_second_job >= 1
 
 
+def test_worker_retries_ready_ssh_batches(tmp_path: Path) -> None:
+    worker = _make_worker(tmp_path)
+    with worker.database.session() as session:
+        job_id = _add_queued_job(session, 1)
+        job = session.get(Job, job_id)
+        job.status = "waiting_for_kindle"
+        job.delivery_transport = "ssh"
+        batch_id = job.batch_id
+        session.commit()
+
+    attempted: list[str] = []
+
+    class FakeSshBatches:
+        def run(self, value: str) -> None:
+            attempted.append(value)
+
+    worker.ssh_deliveries = FakeSshBatches()
+    worker.deliver_pending_ssh_batches(force=True)
+
+    assert attempted == [batch_id]
+
+
 def test_wait_between_deliveries_checks_mail(tmp_path: Path) -> None:
     worker = _make_worker(tmp_path)
     mail = RecordingMail()
