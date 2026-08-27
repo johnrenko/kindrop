@@ -4,7 +4,7 @@ from zipfile import ZipFile
 
 from kindrop.database import Database
 from kindrop.domain import ConversionPreset
-from kindrop.kindle_ssh import KindleDeliveryReceipt, KindleProbe
+from kindrop.kindle_ssh import KindleProbe, KindleSshTransferReceipt
 from kindrop.models import AppSettings, Batch, Candidate, Job, Revision, Scan
 from kindrop.services import (
     MAX_EPUB_BYTES,
@@ -160,7 +160,7 @@ class FakeKindle:
 
     def deliver(self, local_path: Path, relative_path: str, *, replace: bool = False):
         self.delivered.append((local_path.name, relative_path, replace))
-        return KindleDeliveryReceipt(
+        return KindleSshTransferReceipt(
             remote_path=f"/mnt/us/documents/KOReader/Kindrop/{relative_path}",
             sha256="a" * 64,
             size_bytes=local_path.stat().st_size,

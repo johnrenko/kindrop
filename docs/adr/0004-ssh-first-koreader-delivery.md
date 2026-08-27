@@ -10,11 +10,17 @@ CBR, CBZ, and image-heavy PDF inputs are optimized for the Paperwhite 1/2 `KPW` 
 one CBZ. PDF optimization is enabled by default but is reviewable per document; an unoptimized
 PDF and an EPUB pass through unchanged. Direct SSH delivery has no email-size split limit.
 
-Kindrop owns only `/mnt/us/documents/KOReader/Kindrop`. It uploads to a temporary name, verifies
-the remote SHA-256, and atomically renames to the final path. The complete selected batch is
+Kindrop's automatic Delivery pipeline owns only `/mnt/us/documents/KOReader/Kindrop`. It uploads
+to a temporary name, verifies the remote SHA-256, and atomically renames to the final path. The complete selected batch is
 blocked unless it leaves at least 100 MiB free. Untracked collisions block rather than overwrite,
 updates retain their recorded path and adjacent KOReader reading data, and Kindrop never mirrors
 Drive deletions or automatically deletes Kindle books.
+
+The SSH storage browser is a separate, operator-controlled tool for explicit actions within
+`/mnt/us`. Its Manual Upload copies one selected local file into the currently open folder using
+the same hash verification and atomic publication, refuses collisions, and creates no Delivery
+or other pipeline record. Browse, rename, move, delete, and Manual Upload actions never run
+automatically.
 
 The file payload uses the SSH server's SFTP subsystem rather than SCP because the KOReader
 Dropbear bundle does not provide a remote `scp` executable. Metadata checks, hashing, and atomic

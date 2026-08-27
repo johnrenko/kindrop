@@ -44,3 +44,8 @@ _Avoid_: Email, upload
 The configured Kindle device profile and Send to Kindle email address.
 _Avoid_: Device, recipient
 
+**Manual Upload**:
+A user-initiated SFTP transfer of one local file into the folder currently open in the Kindle
+storage browser. It is verified and published atomically, but it does not create a Conversion
+Job, Artifact, or Delivery record.
+_Avoid_: Delivery, automatic delivery

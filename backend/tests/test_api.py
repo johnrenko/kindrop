@@ -209,6 +209,38 @@ def test_kindle_file_browser_lists_renames_moves_and_deletes(tmp_path) -> None:
     ]
 
 
+def test_kindle_file_browser_uploads_and_removes_its_local_temporary_file(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    captured = {}
+
+    class FakeTransport:
+        def upload_storage_item(self, local_path, destination_directory, filename):
+            captured["content"] = local_path.read_bytes()
+            captured["exists_during_upload"] = local_path.exists()
+            captured["destination"] = destination_directory
+            captured["filename"] = filename
+            captured["local_path"] = local_path
+            return SimpleNamespace(remote_path=f"{destination_directory}/{filename}")
+
+    client = TestClient(
+        create_app(database, ssh_transport_factory=lambda _config: FakeTransport())
+    )
+
+    response = client.post(
+        "/api/kindle/files/upload",
+        data={"destination_directory": "/mnt/us/documents/KOReader"},
+        files={"file": ("manual.cbz", b"comic", "application/vnd.comicbook+zip")},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"path": "/mnt/us/documents/KOReader/manual.cbz"}
+    assert captured["content"] == b"comic"
+    assert captured["exists_during_upload"] is True
+    assert captured["destination"] == "/mnt/us/documents/KOReader"
+    assert captured["filename"] == "manual.cbz"
+    assert captured["local_path"].exists() is False
+
+
 def test_batch_creation_snapshots_preset_and_queues_selected_candidates(tmp_path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'test.db'}")
     app = create_app(database)

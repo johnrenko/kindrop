@@ -66,7 +66,7 @@ class KindleProbe:
 
 
 @dataclass(frozen=True)
-class KindleDeliveryReceipt:
+class KindleSshTransferReceipt:
     remote_path: str
     sha256: str
     size_bytes: int
@@ -280,6 +280,25 @@ class KindleSshTransport:
         )
         self._run_storage_checked(command, operation="Kindle delete")
 
+    def upload_storage_item(
+        self,
+        local_path: Path,
+        destination_directory: str | PurePosixPath,
+        filename: str,
+    ) -> KindleSshTransferReceipt:
+        if not local_path.is_file():
+            raise ValueError(f"Upload source does not exist: {local_path}")
+        destination_parent = self._storage_path(destination_directory)
+        safe_name = self._file_name(filename)
+        command = (
+            f"destination_parent={shlex.quote(str(destination_parent))}; "
+            f"{self._storage_guard('destination_parent')}; "
+            "if [ ! -d \"$destination_parent\" ]; then "
+            f"printf 'NOT_DIRECTORY\\n' >&2; exit {_STORAGE_NOT_FOUND_EXIT}; fi"
+        )
+        self._run_storage_checked(command, operation="Kindle upload destination check")
+        return self._upload_to_remote_path(local_path, destination_parent / safe_name)
+
     def inspect_host_key(self) -> KindleHostKey:
         result = self._run_command_checked(
             [
@@ -348,11 +367,20 @@ class KindleSshTransport:
         relative_path: str | PurePosixPath,
         *,
         replace: bool = False,
-    ) -> KindleDeliveryReceipt:
+    ) -> KindleSshTransferReceipt:
         if not local_path.is_file():
             raise ValueError(f"Delivery source does not exist: {local_path}")
         remote_path = self._remote_path(relative_path)
         self._run_ssh_checked(f"mkdir -p {shlex.quote(str(remote_path.parent))}")
+        return self._upload_to_remote_path(local_path, remote_path, replace=replace)
+
+    def _upload_to_remote_path(
+        self,
+        local_path: Path,
+        remote_path: PurePosixPath,
+        *,
+        replace: bool = False,
+    ) -> KindleSshTransferReceipt:
         quoted_path = shlex.quote(str(remote_path))
         collision = self._run_ssh_checked(
             f"if [ -e {quoted_path} ]; then printf 'EXISTS\\n'; "
@@ -393,7 +421,7 @@ class KindleSshTransport:
             if publish.stdout.strip() != "PUBLISHED":
                 self._remove_temporary_file(temporary_path)
                 raise KindleCollisionError(str(remote_path))
-        return KindleDeliveryReceipt(
+        return KindleSshTransferReceipt(
             remote_path=str(remote_path),
             sha256=local_sha256,
             size_bytes=local_path.stat().st_size,

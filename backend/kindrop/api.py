@@ -1,12 +1,24 @@
 import asyncio
 import json
 import shutil
+import tempfile
 from collections.abc import AsyncIterator, Callable, Generator
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -469,6 +481,32 @@ def create_app(
         except Exception as error:
             raise kindle_storage_error(error) from error
         return KindleStorageListingRead.model_validate(listing)
+
+    @app.post("/api/kindle/files/upload", response_model=KindleStorageMutationRead)
+    def upload_kindle_storage_item(
+        destination_directory: str = Form(min_length=1, max_length=2000),
+        file: UploadFile = File(),
+        session: Session = Depends(session_dependency),
+    ) -> KindleStorageMutationRead:
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                prefix="kindrop-manual-upload-", suffix=".part", delete=False
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                shutil.copyfileobj(file.file, temporary)
+            receipt = configured_ssh_transport(_settings(session)).upload_storage_item(
+                temporary_path,
+                destination_directory,
+                file.filename or "",
+            )
+        except Exception as error:
+            raise kindle_storage_error(error) from error
+        finally:
+            file.file.close()
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        return KindleStorageMutationRead(path=receipt.remote_path)
 
     @app.post("/api/kindle/files/rename", response_model=KindleStorageMutationRead)
     def rename_kindle_storage_item(

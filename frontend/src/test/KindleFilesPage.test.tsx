@@ -140,4 +140,40 @@ describe("Kindle files", () => {
       }),
     );
   });
+
+  it("uploads a manually selected file into the open folder", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path === "/api/kindle/files/upload") {
+        const body = init?.body as FormData;
+        expect(body).toBeInstanceOf(FormData);
+        expect(body.get("destination_directory")).toBe("/mnt/us");
+        expect((body.get("file") as File).name).toBe("manual.cbz");
+        expect(new Headers(init?.headers).has("Content-Type")).toBe(false);
+        return Response.json({ path: "/mnt/us/manual.cbz" });
+      }
+      return Response.json(rootListing);
+    });
+    renderPage();
+    await screen.findByRole("button", { name: "Upload file" });
+    const file = new File(["comic"], "manual.cbz", { type: "application/vnd.comicbook+zip" });
+
+    await userEvent.upload(screen.getByLabelText("Choose file to upload"), file);
+
+    let dialog = screen.getByRole("dialog", { name: "Upload file" });
+    expect(within(dialog).getByText("manual.cbz")).toBeInTheDocument();
+    expect(within(dialog).getByText("5 B")).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Upload file" })).not.toBeInTheDocument();
+
+    await userEvent.upload(screen.getByLabelText("Choose file to upload"), file);
+    dialog = screen.getByRole("dialog", { name: "Upload file" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Upload here" }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/kindle/files/upload",
+      expect.objectContaining({ method: "POST", body: expect.any(FormData) }),
+    );
+    expect(await screen.findByText("Uploaded manual.cbz to /mnt/us.")).toBeInTheDocument();
+  });
 });

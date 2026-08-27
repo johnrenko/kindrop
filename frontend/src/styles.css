@@ -5,6 +5,7 @@
   html { color-scheme: light; }
   body { margin: 0; }
   button, input, select { font: inherit; }
+  .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
   button, a, input, select { -webkit-tap-highlight-color: transparent; }
 }
 
@@ -271,6 +272,9 @@
   .kindle-breadcrumbs button { min-height: 36px; display: inline-flex; align-items: center; gap: .4rem; padding: .3rem .45rem; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
   .kindle-breadcrumbs button[aria-current="page"] { color: var(--ink); font-weight: 700; }
   .kindle-browser__count { padding-right: .5rem; color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; white-space: nowrap; }
+  .kindle-browser__toolbar-actions { display: flex; align-items: center; gap: .6rem; }
+  .kindle-browser__upload { min-height: 40px; padding: .5rem .75rem; white-space: nowrap; }
+  .kindle-browser__success { margin: 0; padding: .75rem 1rem; border-top: 1px solid var(--line); color: oklch(43% .11 145); font-size: .82rem; font-weight: 650; }
   .kindle-browser__state { min-height: 230px; display: flex; align-items: center; justify-content: center; gap: 1rem; padding: 2rem; color: var(--muted); text-align: left; }
   .kindle-browser__state p { margin: .3rem 0 0; }
   .kindle-browser__state--error { color: var(--red); }
@@ -299,6 +303,10 @@
   .file-dialog form input { padding: .65rem .75rem; }
   .file-dialog__close { position: absolute; top: 1rem; right: 1rem; width: 40px; height: 40px; display: grid; place-items: center; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
   .file-dialog__actions { display: flex; justify-content: flex-end; gap: .6rem; margin-top: 1.5rem; }
+  .upload-summary { display: flex; align-items: center; gap: .8rem; margin-top: 1.2rem; padding: .9rem; border: 1px solid var(--line); background: var(--paper-deep); }
+  .upload-summary > svg { flex: 0 0 auto; color: var(--accent); }
+  .upload-summary strong, .upload-summary small { display: block; overflow-wrap: anywhere; }
+  .upload-summary small { margin-top: .2rem; color: var(--muted); }
   .move-picker__path { display: flex; align-items: center; gap: .55rem; margin-top: 1.2rem; padding: .75rem; border: 1px solid var(--ink); font: .8rem/1.4 ui-monospace, monospace; overflow-wrap: anywhere; }
   .move-picker { max-height: 270px; overflow-y: auto; border: 1px solid var(--line); border-top: 0; }
   .move-picker > button { width: 100%; min-height: 48px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .6rem; padding: .65rem .8rem; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer; text-align: left; }
@@ -355,6 +363,7 @@
     .retry-dialog__form { grid-template-columns: 1fr; }
     .retry-dialog__form .form-error, .retry-dialog__actions { grid-column: auto; }
     .kindle-browser__toolbar { grid-template-columns: auto minmax(0, 1fr); }
+    .kindle-browser__toolbar-actions { grid-column: 1 / -1; justify-content: flex-end; padding: 0 .1rem .25rem; }
     .kindle-browser__count { display: none; }
     .kindle-file-table__head { display: none; }
     .kindle-file-row { grid-template-columns: minmax(0, 1fr) auto; gap: .35rem 1rem; }

@@ -175,6 +175,53 @@ def test_browser_moves_and_deletes_items_but_never_the_storage_root(tmp_path: Pa
         transport.delete_storage_item("/mnt/us")
 
 
+def test_browser_uploads_a_local_file_atomically_into_the_selected_folder(tmp_path: Path):
+    source = tmp_path / "manual.cbz"
+    source.write_bytes(b"comic")
+    expected_sha256 = "7e002e1ba02e628e7422bd3017520effa8cc1638662efa78a78b6af1548eb575"
+    runner = FakeCommandRunner(
+        [
+            completed(),
+            completed(stdout="MISSING\n"),
+            completed(),
+            completed(stdout=f"{expected_sha256}  temporary-file\n"),
+            completed(stdout="PUBLISHED\n"),
+        ]
+    )
+    transport = KindleSshTransport(config(tmp_path), runner=runner)
+
+    receipt = transport.upload_storage_item(
+        source,
+        "/mnt/us/documents/KOReader",
+        "My Manga.cbz",
+    )
+
+    assert receipt.remote_path == "/mnt/us/documents/KOReader/My Manga.cbz"
+    assert receipt.sha256 == expected_sha256
+    assert receipt.size_bytes == 5
+    assert "readlink -f" in runner.commands[0][-1]
+    assert runner.commands[2][0] == "sftp"
+    assert runner.inputs[2] == (
+        f'put "{source}" '
+        '"/mnt/us/documents/KOReader/.My Manga.cbz.7e002e1ba02e.kindrop-part"\nquit\n'
+    )
+
+
+def test_browser_upload_refuses_an_existing_destination_without_sftp(tmp_path: Path):
+    source = tmp_path / "manual.cbz"
+    source.write_bytes(b"comic")
+    runner = FakeCommandRunner([completed(), completed(stdout="EXISTS\n")])
+
+    with pytest.raises(KindleCollisionError):
+        KindleSshTransport(config(tmp_path), runner=runner).upload_storage_item(
+            source,
+            "/mnt/us/documents",
+            "manual.cbz",
+        )
+
+    assert not any(command[0] == "sftp" for command in runner.commands)
+
+
 def test_delivery_rejects_an_untracked_remote_collision(tmp_path: Path):
     source = tmp_path / "book.cbz"
     source.write_bytes(b"comic")

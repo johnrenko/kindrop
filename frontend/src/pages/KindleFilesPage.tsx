@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -10,6 +10,7 @@ import {
   Pencil,
   RefreshCw,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 
@@ -56,6 +57,13 @@ export function KindleFilesPage() {
   const [renameName, setRenameName] = useState("");
   const [moveTarget, setMoveTarget] = useState<KindleStorageItem | null>(null);
   const [movePath, setMovePath] = useState(KINDLE_STORAGE_ROOT);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
+  const uploadInput = useRef<HTMLInputElement>(null);
+  const clearUploadSelection = () => {
+    setUploadFile(null);
+    if (uploadInput.current) uploadInput.current.value = "";
+  };
 
   const listing = useQuery({
     queryKey: [...queryKeys.kindleFiles, path],
@@ -86,6 +94,15 @@ export function KindleFilesPage() {
   const remove = useMutation({
     mutationFn: api.deleteKindleItem,
     onSuccess: refreshFiles,
+  });
+  const upload = useMutation({
+    mutationFn: ({ file, destination }: { file: File; destination: string }) =>
+      api.uploadKindleItem(file, destination),
+    onSuccess: async (_result, variables) => {
+      clearUploadSelection();
+      setUploadSuccess(`Uploaded ${variables.file.name} to ${variables.destination}.`);
+      await refreshFiles();
+    },
   });
 
   const openRename = (item: KindleStorageItem) => {
@@ -143,7 +160,28 @@ export function KindleFilesPage() {
               </span>
             ))}
           </nav>
-          <span className="kindle-browser__count">{listing.data?.items.length ?? 0} items</span>
+          <div className="kindle-browser__toolbar-actions">
+            <span className="kindle-browser__count">{listing.data?.items.length ?? 0} items</span>
+            <button
+              className="button button--primary kindle-browser__upload"
+              type="button"
+              onClick={() => uploadInput.current?.click()}
+              disabled={upload.isPending}
+            >
+              <Upload size={16} /> Upload file
+            </button>
+            <input
+              ref={uploadInput}
+              className="visually-hidden"
+              type="file"
+              aria-label="Choose file to upload"
+              onChange={(event) => {
+                upload.reset();
+                setUploadSuccess(null);
+                setUploadFile(event.target.files?.[0] ?? null);
+              }}
+            />
+          </div>
         </div>
 
         {listing.isLoading && <div className="kindle-browser__state">Reading Kindle storage…</div>}
@@ -184,7 +222,35 @@ export function KindleFilesPage() {
           </div>
         )}
         {remove.error && <p className="form-error kindle-browser__error">{remove.error.message}</p>}
+        {uploadSuccess && <p className="kindle-browser__success" role="status">{uploadSuccess}</p>}
       </section>
+
+      {uploadFile && (
+        <div className="file-dialog-backdrop">
+          <section className="file-dialog" role="dialog" aria-modal="true" aria-labelledby="upload-title">
+            <button className="file-dialog__close" type="button" aria-label="Close upload dialog" onClick={clearUploadSelection}><X size={19} /></button>
+            <span className="eyebrow">Manual SSH upload</span>
+            <h2 id="upload-title">Upload file</h2>
+            <div className="upload-summary">
+              <File size={22} />
+              <div><strong>{uploadFile.name}</strong><small>{formatBytes(uploadFile.size)}</small></div>
+            </div>
+            <p>The file will be uploaded to <strong>{listing.data?.path ?? path}</strong>. Existing items are never overwritten.</p>
+            {upload.error && <p className="form-error">{upload.error.message}</p>}
+            <div className="file-dialog__actions">
+              <button className="button button--secondary" type="button" onClick={clearUploadSelection}>Cancel</button>
+              <button
+                className="button button--primary"
+                type="button"
+                disabled={upload.isPending}
+                onClick={() => upload.mutate({ file: uploadFile, destination: listing.data?.path ?? path })}
+              >
+                {upload.isPending ? "Uploading…" : "Upload here"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {renameTarget && (
         <div className="file-dialog-backdrop">

@@ -24,9 +24,12 @@ export interface CandidateUpdate {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = init?.body instanceof FormData
+    ? init.headers
+    : { "Content-Type": "application/json", ...init?.headers };
   const response = await fetch(path, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers,
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { detail?: string } | null;
@@ -50,6 +53,15 @@ export const api = {
     }),
   kindleFiles: (path = "/mnt/us") =>
     request<KindleStorageListing>(`/api/kindle/files?path=${encodeURIComponent(path)}`),
+  uploadKindleItem: (file: File, destinationDirectory: string) => {
+    const body = new FormData();
+    body.append("destination_directory", destinationDirectory);
+    body.append("file", file);
+    return request<{ path: string }>("/api/kindle/files/upload", {
+      method: "POST",
+      body,
+    });
+  },
   renameKindleItem: (path: string, newName: string) =>
     request<{ path: string }>("/api/kindle/files/rename", {
       method: "POST",
