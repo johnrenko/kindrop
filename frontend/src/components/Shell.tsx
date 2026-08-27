@@ -1,10 +1,11 @@
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { BookOpen, History, Inbox, Settings } from "lucide-react";
+import { BookOpen, HardDrive, History, Inbox, Settings } from "lucide-react";
 
 const navigation = [
   { to: "/", label: "Desk", icon: BookOpen },
   { to: "/review", label: "Review", icon: Inbox },
   { to: "/jobs", label: "History", icon: History },
+  { to: "/kindle", label: "Kindle", icon: HardDrive },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
@@ -40,4 +41,3 @@ export function Shell() {
     </div>
   );
 }
-

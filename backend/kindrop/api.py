@@ -20,7 +20,13 @@ from .crypto import SecretStore
 from .database import Database
 from .domain import ConversionPreset
 from .google import GoogleDriveGateway, GoogleGmailGateway, GoogleServiceFactory
-from .kindle_ssh import KindleSshConfig, KindleSshTransport
+from .kindle_ssh import (
+    KindleCollisionError,
+    KindleSshConfig,
+    KindleSshError,
+    KindleSshTransport,
+    KindleStorageItemNotFoundError,
+)
 from .metadata import ArchiveMetadataError, format_kindle_title, volume_number
 from .models import (
     AppSettings,
@@ -41,6 +47,11 @@ from .schemas import (
     FolderPageRead,
     GoogleClientPayload,
     JobRead,
+    KindleStorageDeleteRequest,
+    KindleStorageListingRead,
+    KindleStorageMoveRequest,
+    KindleStorageMutationRead,
+    KindleStorageRenameRequest,
     MangaMatchRead,
     OAuthStart,
     ScanRead,
@@ -436,6 +447,65 @@ def create_app(
         )
         app.state.ssh_status = result
         return result
+
+    def kindle_storage_error(error: Exception) -> HTTPException:
+        if isinstance(error, KindleCollisionError):
+            return HTTPException(status_code=409, detail=str(error))
+        if isinstance(error, KindleStorageItemNotFoundError):
+            return HTTPException(status_code=404, detail=str(error))
+        if isinstance(error, ValueError):
+            return HTTPException(status_code=422, detail=str(error))
+        if isinstance(error, KindleSshError):
+            return HTTPException(status_code=502, detail=str(error))
+        return HTTPException(status_code=500, detail="Kindle file operation failed")
+
+    @app.get("/api/kindle/files", response_model=KindleStorageListingRead)
+    def list_kindle_storage(
+        path: str = Query(default="/mnt/us", min_length=1, max_length=2000),
+        session: Session = Depends(session_dependency),
+    ) -> KindleStorageListingRead:
+        try:
+            listing = configured_ssh_transport(_settings(session)).list_storage(path)
+        except Exception as error:
+            raise kindle_storage_error(error) from error
+        return KindleStorageListingRead.model_validate(listing)
+
+    @app.post("/api/kindle/files/rename", response_model=KindleStorageMutationRead)
+    def rename_kindle_storage_item(
+        payload: KindleStorageRenameRequest,
+        session: Session = Depends(session_dependency),
+    ) -> KindleStorageMutationRead:
+        try:
+            path = configured_ssh_transport(_settings(session)).rename_storage_item(
+                payload.path, payload.new_name
+            )
+        except Exception as error:
+            raise kindle_storage_error(error) from error
+        return KindleStorageMutationRead(path=path)
+
+    @app.post("/api/kindle/files/move", response_model=KindleStorageMutationRead)
+    def move_kindle_storage_item(
+        payload: KindleStorageMoveRequest,
+        session: Session = Depends(session_dependency),
+    ) -> KindleStorageMutationRead:
+        try:
+            path = configured_ssh_transport(_settings(session)).move_storage_item(
+                payload.path, payload.destination_directory
+            )
+        except Exception as error:
+            raise kindle_storage_error(error) from error
+        return KindleStorageMutationRead(path=path)
+
+    @app.post("/api/kindle/files/delete", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_kindle_storage_item(
+        payload: KindleStorageDeleteRequest,
+        session: Session = Depends(session_dependency),
+    ) -> Response:
+        try:
+            configured_ssh_transport(_settings(session)).delete_storage_item(payload.path)
+        except Exception as error:
+            raise kindle_storage_error(error) from error
+        return Response(status_code=204)
 
     @app.get("/api/kindle-profiles")
     def kindle_profiles() -> list[dict[str, str]]:

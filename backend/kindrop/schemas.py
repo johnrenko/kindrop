@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -78,6 +78,41 @@ class SshHostKeyRead(BaseModel):
 
 class SshTrustRequest(BaseModel):
     fingerprint: str = Field(min_length=8, max_length=200)
+
+
+class KindleStorageItemRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    name: str
+    path: str
+    kind: Literal["directory", "file", "symlink", "other"]
+    size_bytes: int
+    modified_at: int | None
+
+
+class KindleStorageListingRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    path: str
+    root: str
+    parent: str | None
+    items: list[KindleStorageItemRead]
+
+
+class KindleStorageRenameRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=2000)
+    new_name: str = Field(min_length=1, max_length=255)
+
+
+class KindleStorageMoveRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=2000)
+    destination_directory: str = Field(min_length=1, max_length=2000)
+
+
+class KindleStorageDeleteRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=2000)
+
+
+class KindleStorageMutationRead(BaseModel):
+    path: str
 
 
 class FolderRead(BaseModel):

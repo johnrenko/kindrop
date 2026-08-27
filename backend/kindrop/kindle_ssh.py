@@ -11,11 +11,15 @@ from contextlib import suppress
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 DEFAULT_KINDROP_ROOT = PurePosixPath("/mnt/us/documents/KOReader/Kindrop")
 DEFAULT_KINDLE_STORAGE_ROOT = PurePosixPath("/mnt/us")
 _HOST_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 _USER_PATTERN = re.compile(r"^[a-z_][a-z0-9_-]*$", re.IGNORECASE)
+_STORAGE_COLLISION_EXIT = 42
+_STORAGE_NOT_FOUND_EXIT = 44
+_STORAGE_BOUNDARY_EXIT = 45
 
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -74,6 +78,23 @@ class KindleHostKey:
     known_hosts_line: str
 
 
+@dataclass(frozen=True)
+class KindleStorageItem:
+    name: str
+    path: str
+    kind: Literal["directory", "file", "symlink", "other"]
+    size_bytes: int
+    modified_at: int | None
+
+
+@dataclass(frozen=True)
+class KindleStorageListing:
+    path: str
+    root: str
+    parent: str | None
+    items: list[KindleStorageItem]
+
+
 class KindleSshError(RuntimeError):
     pass
 
@@ -81,10 +102,14 @@ class KindleSshError(RuntimeError):
 class KindleCollisionError(KindleSshError):
     def __init__(self, remote_path: str) -> None:
         self.remote_path = remote_path
-        super().__init__(f"A file not managed by Kindrop already exists at {remote_path}")
+        super().__init__(f"An item already exists at {remote_path}")
 
 
 class KindleIntegrityError(KindleSshError):
+    pass
+
+
+class KindleStorageItemNotFoundError(KindleSshError):
     pass
 
 
@@ -134,6 +159,126 @@ class KindleSshTransport:
                 detail="Kindle returned an invalid free-space response",
             )
         return KindleProbe(reachable=True, free_bytes=free_kib * 1024)
+
+    def list_storage(self, path: str | PurePosixPath) -> KindleStorageListing:
+        target = self._storage_path(path)
+        target_argument = shlex.quote(str(target))
+        command = (
+            f"target={target_argument}; "
+            f"{self._storage_guard('target')}; "
+            "if [ ! -d \"$target\" ]; then "
+            f"printf 'NOT_DIRECTORY\\n' >&2; exit {_STORAGE_NOT_FOUND_EXIT}; fi; "
+            "for entry in \"$target\"/* \"$target\"/.[!.]* \"$target\"/..?*; do "
+            "if [ ! -e \"$entry\" ] && [ ! -L \"$entry\" ]; then continue; fi; "
+            "name=${entry##*/}; "
+            "if [ -L \"$entry\" ]; then kind=symlink; size=0; "
+            "elif [ -d \"$entry\" ]; then kind=directory; size=0; "
+            "elif [ -f \"$entry\" ]; then kind=file; "
+            "size=$(stat -c %s \"$entry\" 2>/dev/null || wc -c < \"$entry\"); "
+            "else kind=other; size=0; fi; "
+            "modified=$(stat -c %Y \"$entry\" 2>/dev/null || printf 0); "
+            "printf '%s\\0%s\\0%s\\0%s\\0' \"$name\" \"$kind\" \"$size\" \"$modified\"; "
+            "done"
+        )
+        result = self._run_storage_checked(command, operation="Kindle directory listing")
+        fields = result.stdout.split("\0")
+        if fields and fields[-1] == "":
+            fields.pop()
+        if len(fields) % 4:
+            raise KindleSshError("Kindle returned an invalid directory listing")
+        items = []
+        for index in range(0, len(fields), 4):
+            name, kind, size_value, modified_value = fields[index : index + 4]
+            if not name or "/" in name or kind not in {"directory", "file", "symlink", "other"}:
+                raise KindleSshError("Kindle returned an invalid directory entry")
+            try:
+                size_bytes = max(0, int(size_value))
+                modified = int(modified_value)
+            except ValueError as error:
+                raise KindleSshError("Kindle returned invalid file metadata") from error
+            items.append(
+                KindleStorageItem(
+                    name=name,
+                    path=str(target / name),
+                    kind=kind,
+                    size_bytes=size_bytes,
+                    modified_at=modified if modified > 0 else None,
+                )
+            )
+        items.sort(key=lambda item: (item.kind != "directory", item.name.casefold(), item.name))
+        root = self.config.storage_root
+        return KindleStorageListing(
+            path=str(target),
+            root=str(root),
+            parent=None if target == root else str(target.parent),
+            items=items,
+        )
+
+    def rename_storage_item(self, path: str | PurePosixPath, new_name: str) -> str:
+        source = self._mutable_storage_path(path)
+        safe_name = self._file_name(new_name)
+        destination = source.parent / safe_name
+        command = (
+            f"source={shlex.quote(str(source))}; "
+            f"source_parent={shlex.quote(str(source.parent))}; "
+            f"destination={shlex.quote(str(destination))}; "
+            f"{self._storage_guard('source_parent')}; "
+            "if [ ! -e \"$source\" ] && [ ! -L \"$source\" ]; then "
+            f"printf 'NOT_FOUND\\n' >&2; exit {_STORAGE_NOT_FOUND_EXIT}; fi; "
+            "if [ -e \"$destination\" ] || [ -L \"$destination\" ]; then "
+            f"printf 'COLLISION\\n' >&2; exit {_STORAGE_COLLISION_EXIT}; fi; "
+            "mv \"$source\" \"$destination\""
+        )
+        self._run_storage_checked(
+            command,
+            operation="Kindle rename",
+            collision_path=str(destination),
+        )
+        return str(destination)
+
+    def move_storage_item(
+        self,
+        path: str | PurePosixPath,
+        destination_directory: str | PurePosixPath,
+    ) -> str:
+        source = self._mutable_storage_path(path)
+        destination_parent = self._storage_path(destination_directory)
+        if destination_parent == source or destination_parent.is_relative_to(source):
+            raise ValueError("An item cannot be moved inside itself")
+        destination = destination_parent / source.name
+        command = (
+            f"source={shlex.quote(str(source))}; "
+            f"source_parent={shlex.quote(str(source.parent))}; "
+            f"destination_parent={shlex.quote(str(destination_parent))}; "
+            f"destination={shlex.quote(str(destination))}; "
+            f"{self._storage_guard('source_parent')}; "
+            f"{self._storage_guard('destination_parent')}; "
+            "if [ ! -e \"$source\" ] && [ ! -L \"$source\" ]; then "
+            f"printf 'NOT_FOUND\\n' >&2; exit {_STORAGE_NOT_FOUND_EXIT}; fi; "
+            "if [ ! -d \"$destination_parent\" ]; then "
+            f"printf 'NOT_DIRECTORY\\n' >&2; exit {_STORAGE_NOT_FOUND_EXIT}; fi; "
+            "if [ -e \"$destination\" ] || [ -L \"$destination\" ]; then "
+            f"printf 'COLLISION\\n' >&2; exit {_STORAGE_COLLISION_EXIT}; fi; "
+            "mv \"$source\" \"$destination\""
+        )
+        self._run_storage_checked(
+            command,
+            operation="Kindle move",
+            collision_path=str(destination),
+        )
+        return str(destination)
+
+    def delete_storage_item(self, path: str | PurePosixPath) -> None:
+        target = self._mutable_storage_path(path)
+        command = (
+            f"target={shlex.quote(str(target))}; "
+            f"target_parent={shlex.quote(str(target.parent))}; "
+            f"{self._storage_guard('target_parent')}; "
+            "if [ ! -e \"$target\" ] && [ ! -L \"$target\" ]; then "
+            f"printf 'NOT_FOUND\\n' >&2; exit {_STORAGE_NOT_FOUND_EXIT}; fi; "
+            "rm -rf \"$target\""
+        )
+        self._run_storage_checked(command, operation="Kindle delete")
 
     def inspect_host_key(self) -> KindleHostKey:
         result = self._run_command_checked(
@@ -280,6 +425,74 @@ class KindleSshTransport:
         if relative.is_absolute() or relative == PurePosixPath(".") or ".." in relative.parts:
             raise ValueError("Remote path must stay beneath the Kindrop destination root")
         return self.config.destination_root / relative
+
+    def _storage_path(self, path: str | PurePosixPath) -> PurePosixPath:
+        raw_path = str(path)
+        if "\x00" in raw_path or "\n" in raw_path or "\r" in raw_path:
+            raise ValueError("Kindle storage path contains unsupported characters")
+        target = PurePosixPath(raw_path)
+        if not target.is_absolute() or ".." in target.parts:
+            raise ValueError("Kindle storage path must be absolute and cannot contain traversal")
+        try:
+            target.relative_to(self.config.storage_root)
+        except ValueError as error:
+            raise ValueError(
+                f"Kindle storage path must stay beneath {self.config.storage_root}"
+            ) from error
+        return target
+
+    def _mutable_storage_path(self, path: str | PurePosixPath) -> PurePosixPath:
+        target = self._storage_path(path)
+        if target == self.config.storage_root:
+            raise ValueError("The Kindle storage root cannot be changed or deleted")
+        return target
+
+    @staticmethod
+    def _file_name(name: str) -> str:
+        if (
+            not name
+            or name in {".", ".."}
+            or "/" in name
+            or "\x00" in name
+            or "\n" in name
+            or "\r" in name
+        ):
+            raise ValueError("The new name must be a single valid file name")
+        return name
+
+    def _storage_guard(self, variable: str) -> str:
+        root = shlex.quote(str(self.config.storage_root))
+        return (
+            f"resolved=$(readlink -f \"${variable}\") || {{ "
+            f"printf 'NOT_FOUND\\n' >&2; exit {_STORAGE_NOT_FOUND_EXIT}; }}; "
+            f"case \"$resolved\" in {root}|{root}/*) ;; *) "
+            f"printf 'OUTSIDE_STORAGE\\n' >&2; exit {_STORAGE_BOUNDARY_EXIT} ;; esac"
+        )
+
+    def _run_storage_checked(
+        self,
+        remote_command: str,
+        *,
+        operation: str,
+        collision_path: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        try:
+            result = self._run(
+                self._ssh_command(remote_command),
+                timeout=self.config.command_timeout_seconds,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise KindleSshError(f"{operation} failed: {error}") from error
+        detail = (result.stderr or result.stdout or f"{operation} failed").strip()
+        if result.returncode == _STORAGE_COLLISION_EXIT and collision_path:
+            raise KindleCollisionError(collision_path)
+        if result.returncode == _STORAGE_NOT_FOUND_EXIT:
+            raise KindleStorageItemNotFoundError(detail or "Kindle item not found")
+        if result.returncode == _STORAGE_BOUNDARY_EXIT:
+            raise ValueError("The resolved path leaves Kindle user storage")
+        if result.returncode != 0:
+            raise KindleSshError(detail)
+        return result
 
     def _run_ssh_checked(self, remote_command: str) -> subprocess.CompletedProcess[str]:
         return self._run_command_checked(

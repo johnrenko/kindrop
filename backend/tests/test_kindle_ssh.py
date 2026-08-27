@@ -10,6 +10,7 @@ from kindrop.kindle_ssh import (
     KindleIntegrityError,
     KindleSshConfig,
     KindleSshTransport,
+    KindleStorageListing,
 )
 
 
@@ -96,6 +97,82 @@ def test_probe_reports_unreachable_without_fabricating_free_space(tmp_path: Path
 
     assert probe.reachable is False
     assert probe.free_bytes is None
+
+
+def test_browser_lists_storage_entries_and_keeps_hidden_items(tmp_path: Path):
+    output = "\0".join(
+        [
+            "documents",
+            "directory",
+            "0",
+            "1756288800",
+            ".koreader",
+            "directory",
+            "0",
+            "1756288700",
+            "book.cbz",
+            "file",
+            "4096",
+            "1756288600",
+            "",
+        ]
+    )
+    runner = FakeCommandRunner([completed(stdout=output)])
+
+    listing = KindleSshTransport(config(tmp_path), runner=runner).list_storage("/mnt/us")
+
+    assert isinstance(listing, KindleStorageListing)
+    assert listing.path == "/mnt/us"
+    assert listing.parent is None
+    assert [item.name for item in listing.items] == [".koreader", "documents", "book.cbz"]
+    assert listing.items[-1].size_bytes == 4096
+    assert listing.items[-1].modified_at == 1756288600
+    assert "readlink -f" in runner.commands[0][-1]
+
+
+def test_browser_rejects_paths_outside_kindle_user_storage_without_connecting(tmp_path: Path):
+    runner = FakeCommandRunner([])
+    transport = KindleSshTransport(config(tmp_path), runner=runner)
+
+    with pytest.raises(ValueError, match="storage"):
+        transport.list_storage("/etc")
+    with pytest.raises(ValueError, match="storage"):
+        transport.delete_storage_item("/mnt/us/../etc/passwd")
+
+    assert runner.commands == []
+
+
+def test_browser_rename_quotes_names_and_refuses_collisions(tmp_path: Path):
+    runner = FakeCommandRunner([completed(returncode=42, stderr="COLLISION")])
+    transport = KindleSshTransport(config(tmp_path), runner=runner)
+
+    with pytest.raises(KindleCollisionError) as error:
+        transport.rename_storage_item(
+            "/mnt/us/documents/Book's.cbz",
+            "$(touch hacked).cbz",
+        )
+
+    assert error.value.remote_path == "/mnt/us/documents/$(touch hacked).cbz"
+    command = runner.commands[0][-1]
+    assert "Book'\"'\"'s.cbz" in command
+    assert "$(touch hacked).cbz'" in command
+
+
+def test_browser_moves_and_deletes_items_but_never_the_storage_root(tmp_path: Path):
+    runner = FakeCommandRunner([completed(), completed()])
+    transport = KindleSshTransport(config(tmp_path), runner=runner)
+
+    moved = transport.move_storage_item(
+        "/mnt/us/documents/book.cbz",
+        "/mnt/us/documents/Archive",
+    )
+    transport.delete_storage_item("/mnt/us/documents/old")
+
+    assert moved == "/mnt/us/documents/Archive/book.cbz"
+    assert "mv \"$source\" \"$destination\"" in runner.commands[0][-1]
+    assert "rm -rf \"$target\"" in runner.commands[1][-1]
+    with pytest.raises(ValueError, match="storage root"):
+        transport.delete_storage_item("/mnt/us")
 
 
 def test_delivery_rejects_an_untracked_remote_collision(tmp_path: Path):

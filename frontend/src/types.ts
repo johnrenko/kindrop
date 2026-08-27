@@ -47,6 +47,23 @@ export interface SshHostKey {
   trusted_fingerprint: string | null;
 }
 
+export type KindleStorageItemKind = "directory" | "file" | "symlink" | "other";
+
+export interface KindleStorageItem {
+  name: string;
+  path: string;
+  kind: KindleStorageItemKind;
+  size_bytes: number;
+  modified_at: number | null;
+}
+
+export interface KindleStorageListing {
+  path: string;
+  root: string;
+  parent: string | null;
+  items: KindleStorageItem[];
+}
+
 export interface CandidateOption {
   candidate_id: string;
   optimize: boolean;

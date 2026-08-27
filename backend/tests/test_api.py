@@ -135,6 +135,80 @@ def test_ssh_host_key_requires_explicit_matching_confirmation(tmp_path) -> None:
     assert trusted == ["SHA256:wrong-key", "SHA256:kindle-key"]
 
 
+def test_kindle_file_browser_lists_renames_moves_and_deletes(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    calls = []
+
+    class FakeTransport:
+        def list_storage(self, path):
+            calls.append(("list", path))
+            return SimpleNamespace(
+                path="/mnt/us/documents",
+                root="/mnt/us",
+                parent="/mnt/us",
+                items=[
+                    SimpleNamespace(
+                        name="Manga",
+                        path="/mnt/us/documents/Manga",
+                        kind="directory",
+                        size_bytes=0,
+                        modified_at=1756288800,
+                    ),
+                    SimpleNamespace(
+                        name="book.cbz",
+                        path="/mnt/us/documents/book.cbz",
+                        kind="file",
+                        size_bytes=4096,
+                        modified_at=1756288700,
+                    ),
+                ],
+            )
+
+        def rename_storage_item(self, path, new_name):
+            calls.append(("rename", path, new_name))
+            return "/mnt/us/documents/renamed.cbz"
+
+        def move_storage_item(self, path, destination_directory):
+            calls.append(("move", path, destination_directory))
+            return "/mnt/us/documents/Archive/renamed.cbz"
+
+        def delete_storage_item(self, path):
+            calls.append(("delete", path))
+
+    client = TestClient(
+        create_app(database, ssh_transport_factory=lambda _config: FakeTransport())
+    )
+
+    listed = client.get("/api/kindle/files", params={"path": "/mnt/us/documents"})
+    renamed = client.post(
+        "/api/kindle/files/rename",
+        json={"path": "/mnt/us/documents/book.cbz", "new_name": "renamed.cbz"},
+    )
+    moved = client.post(
+        "/api/kindle/files/move",
+        json={
+            "path": "/mnt/us/documents/renamed.cbz",
+            "destination_directory": "/mnt/us/documents/Archive",
+        },
+    )
+    deleted = client.post(
+        "/api/kindle/files/delete",
+        json={"path": "/mnt/us/documents/Archive/renamed.cbz"},
+    )
+
+    assert listed.status_code == 200
+    assert listed.json()["items"][1]["size_bytes"] == 4096
+    assert renamed.json()["path"] == "/mnt/us/documents/renamed.cbz"
+    assert moved.json()["path"] == "/mnt/us/documents/Archive/renamed.cbz"
+    assert deleted.status_code == 204
+    assert calls == [
+        ("list", "/mnt/us/documents"),
+        ("rename", "/mnt/us/documents/book.cbz", "renamed.cbz"),
+        ("move", "/mnt/us/documents/renamed.cbz", "/mnt/us/documents/Archive"),
+        ("delete", "/mnt/us/documents/Archive/renamed.cbz"),
+    ]
+
+
 def test_batch_creation_snapshots_preset_and_queues_selected_candidates(tmp_path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'test.db'}")
     app = create_app(database)

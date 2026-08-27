@@ -261,6 +261,50 @@
   .fallback-form { padding: 1.2rem; border: 1px solid var(--line); background: oklch(99% 0.006 80 / 55%); }
   .fallback-form__heading { display: flex; align-items: center; gap: .65rem; font-family: var(--display); font-size: 1.15rem; }
   .fallback-form .quiet-copy { margin: -.35rem 0 0; line-height: 1.45; }
+  .kindle-files-header .header-action strong { overflow-wrap: anywhere; }
+  .kindle-browser { border: 1px solid var(--ink); background: oklch(99% 0.006 80 / 52%); box-shadow: var(--shadow); }
+  .kindle-browser__toolbar { min-height: 58px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .7rem; padding: .45rem .7rem; border-bottom: 1px solid var(--ink); }
+  .kindle-browser__toolbar > .icon-action { color: var(--ink); }
+  .kindle-browser__toolbar > .icon-action:disabled { opacity: .25; cursor: default; }
+  .kindle-breadcrumbs { min-width: 0; display: flex; align-items: center; gap: .2rem; overflow-x: auto; scrollbar-width: thin; }
+  .kindle-breadcrumbs > span { display: inline-flex; align-items: center; flex: 0 0 auto; }
+  .kindle-breadcrumbs button { min-height: 36px; display: inline-flex; align-items: center; gap: .4rem; padding: .3rem .45rem; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+  .kindle-breadcrumbs button[aria-current="page"] { color: var(--ink); font-weight: 700; }
+  .kindle-browser__count { padding-right: .5rem; color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; white-space: nowrap; }
+  .kindle-browser__state { min-height: 230px; display: flex; align-items: center; justify-content: center; gap: 1rem; padding: 2rem; color: var(--muted); text-align: left; }
+  .kindle-browser__state p { margin: .3rem 0 0; }
+  .kindle-browser__state--error { color: var(--red); }
+  .kindle-file-table__head, .kindle-file-row { display: grid; grid-template-columns: minmax(240px, 1fr) 100px minmax(150px, .45fr) 132px; align-items: center; gap: 1rem; }
+  .kindle-file-table__head { min-height: 42px; padding: 0 1rem; border-bottom: 1px solid var(--line); color: var(--muted); font-size: .65rem; font-weight: 700; text-transform: uppercase; letter-spacing: .11em; }
+  .kindle-file-table ul { margin: 0; padding: 0; list-style: none; }
+  .kindle-file-row { min-height: 68px; padding: .65rem 1rem; border-bottom: 1px solid var(--line); }
+  .kindle-file-row:last-child { border-bottom: 0; }
+  .kindle-file-row:hover { background: var(--paper-deep); }
+  .kindle-file-row > span, .kindle-file-row > time { color: var(--muted); font-size: .78rem; }
+  .kindle-file-row__name { min-width: 0; display: grid; grid-template-columns: 1.6rem minmax(0, auto) 1fr; align-items: center; gap: .65rem; }
+  .kindle-file-row__name > svg { color: var(--accent); }
+  .kindle-file-row__name button { min-width: 0; padding: .3rem 0; border: 0; background: transparent; color: var(--ink); cursor: pointer; font-weight: 700; text-align: left; overflow-wrap: anywhere; }
+  .kindle-file-row__name strong { min-width: 0; font-size: .9rem; overflow-wrap: anywhere; }
+  .kindle-file-row__name small { color: var(--muted); font-size: .62rem; text-transform: uppercase; letter-spacing: .08em; }
+  .kindle-file-row__actions { display: flex; justify-content: flex-end; gap: .15rem; }
+  .kindle-file-row__actions button { width: 40px; height: 40px; display: grid; place-items: center; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+  .kindle-file-row__actions button:hover { background: oklch(100% 0 0 / 55%); color: var(--ink); }
+  .kindle-file-row__actions button:last-child:hover { color: var(--red); }
+  .kindle-browser__error { padding: 0 1rem 1rem; }
+  .file-dialog-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 1rem; background: oklch(24% 0.026 45 / 42%); }
+  .file-dialog { position: relative; width: min(100%, 520px); max-height: calc(100vh - 2rem); overflow-y: auto; padding: clamp(1.5rem, 4vw, 2.5rem); border: 1px solid var(--ink); background: var(--paper); box-shadow: var(--shadow); }
+  .file-dialog--move { width: min(100%, 620px); }
+  .file-dialog > p { color: var(--muted); line-height: 1.5; }
+  .file-dialog form label { display: grid; gap: .45rem; color: var(--muted); font-size: .72rem; font-weight: 700; }
+  .file-dialog form input { padding: .65rem .75rem; }
+  .file-dialog__close { position: absolute; top: 1rem; right: 1rem; width: 40px; height: 40px; display: grid; place-items: center; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+  .file-dialog__actions { display: flex; justify-content: flex-end; gap: .6rem; margin-top: 1.5rem; }
+  .move-picker__path { display: flex; align-items: center; gap: .55rem; margin-top: 1.2rem; padding: .75rem; border: 1px solid var(--ink); font: .8rem/1.4 ui-monospace, monospace; overflow-wrap: anywhere; }
+  .move-picker { max-height: 270px; overflow-y: auto; border: 1px solid var(--line); border-top: 0; }
+  .move-picker > button { width: 100%; min-height: 48px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .6rem; padding: .65rem .8rem; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer; text-align: left; }
+  .move-picker > button:hover:not(:disabled) { background: var(--paper-deep); }
+  .move-picker > button:disabled { opacity: .4; cursor: not-allowed; }
+  .move-picker__state { display: block; padding: 1rem; color: var(--muted); font-size: .82rem; }
 }
 
 @layer responsive {
@@ -310,6 +354,12 @@
     .ssh-facts div, .ssh-facts div:first-child { padding-inline: 0; border-left: 0; border-top: 1px solid var(--line); }
     .retry-dialog__form { grid-template-columns: 1fr; }
     .retry-dialog__form .form-error, .retry-dialog__actions { grid-column: auto; }
+    .kindle-browser__toolbar { grid-template-columns: auto minmax(0, 1fr); }
+    .kindle-browser__count { display: none; }
+    .kindle-file-table__head { display: none; }
+    .kindle-file-row { grid-template-columns: minmax(0, 1fr) auto; gap: .35rem 1rem; }
+    .kindle-file-row > span, .kindle-file-row > time { grid-column: 1; padding-left: 2.25rem; }
+    .kindle-file-row__actions { grid-column: 2; grid-row: 1 / span 3; align-self: center; flex-direction: column; }
   }
 
   @media (prefers-reduced-motion: reduce) {

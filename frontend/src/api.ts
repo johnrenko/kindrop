@@ -4,6 +4,7 @@ import type {
   ConversionPreset,
   DriveFolder,
   Job,
+  KindleStorageListing,
   KindleProfile,
   MangaMatch,
   Scan,
@@ -46,6 +47,23 @@ export const api = {
     request<SshHostKey>("/api/ssh/trust", {
       method: "POST",
       body: JSON.stringify({ fingerprint }),
+    }),
+  kindleFiles: (path = "/mnt/us") =>
+    request<KindleStorageListing>(`/api/kindle/files?path=${encodeURIComponent(path)}`),
+  renameKindleItem: (path: string, newName: string) =>
+    request<{ path: string }>("/api/kindle/files/rename", {
+      method: "POST",
+      body: JSON.stringify({ path, new_name: newName }),
+    }),
+  moveKindleItem: (path: string, destinationDirectory: string) =>
+    request<{ path: string }>("/api/kindle/files/move", {
+      method: "POST",
+      body: JSON.stringify({ path, destination_directory: destinationDirectory }),
+    }),
+  deleteKindleItem: (path: string) =>
+    request<void>("/api/kindle/files/delete", {
+      method: "POST",
+      body: JSON.stringify({ path }),
     }),
   profiles: () => request<KindleProfile[]>("/api/kindle-profiles"),
   scans: () => request<Scan[]>("/api/scans"),

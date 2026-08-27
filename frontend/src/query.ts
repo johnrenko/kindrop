@@ -11,6 +11,7 @@ export const queryKeys = {
   setup: ["setup"] as const,
   settings: ["settings"] as const,
   sshStatus: ["ssh-status"] as const,
+  kindleFiles: ["kindle-files"] as const,
   profiles: ["profiles"] as const,
   scans: ["scans"] as const,
   candidates: ["candidates"] as const,
