@@ -859,6 +859,7 @@ class SshBatchDeliverer:
             relative_path = tracked_path or self._relative_path(job, artifact)
             batch_id = job.batch_id
             job.status = "sending"
+            job.error = None
             artifact.delivery.status = "pending"
             session.commit()
 
@@ -897,6 +898,7 @@ class SshBatchDeliverer:
             delivery.sent_at = datetime.now(UTC)
             delivery.error_detail = None
             job.status = "copied_to_kindle"
+            job.error = None
             job.progress = 100
             job.completed_at = datetime.now(UTC)
             member_ids = job.merged_candidate_ids or [job.candidate_id]

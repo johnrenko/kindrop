@@ -501,6 +501,8 @@ def test_ssh_job_prepares_one_cbz_then_copies_it_with_verified_transport(tmp_pat
         assert job.status == "ready_to_deliver"
         assert job.artifacts[0].filename.endswith(".cbz")
         assert job.artifacts[0].delivery.transport == "ssh"
+        job.error = "stale transport failure"
+        session.commit()
     assert gmail.sent == []
 
     kindle = FakeKindle(free_bytes=500 * 1024 * 1024)
@@ -510,6 +512,7 @@ def test_ssh_job_prepares_one_cbz_then_copies_it_with_verified_transport(tmp_pat
         job = session.get(Job, job_id)
         delivery = job.artifacts[0].delivery
         assert job.status == "copied_to_kindle"
+        assert job.error is None
         assert delivery.status == "copied_to_kindle"
         assert delivery.remote_sha256 == "a" * 64
         assert delivery.remote_path.endswith("/Volume Seven.cbz")

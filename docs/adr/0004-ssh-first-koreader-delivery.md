@@ -16,6 +16,10 @@ blocked unless it leaves at least 100 MiB free. Untracked collisions block rathe
 updates retain their recorded path and adjacent KOReader reading data, and Kindrop never mirrors
 Drive deletions or automatically deletes Kindle books.
 
+The file payload uses the SSH server's SFTP subsystem rather than SCP because the KOReader
+Dropbear bundle does not provide a remote `scp` executable. Metadata checks, hashing, and atomic
+publication continue to use strict, key-only SSH commands.
+
 Gmail remains a manual fallback. Selecting **Send by email instead** cancels the incomplete SSH
 Delivery and queues a separate Gmail Job which recreates split EPUB artifacts under the existing
 Send to Kindle constraints. Kindrop never falls back automatically and warns that Kindle capacity

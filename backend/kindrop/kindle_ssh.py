@@ -18,10 +18,7 @@ _HOST_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 _USER_PATTERN = re.compile(r"^[a-z_][a-z0-9_-]*$", re.IGNORECASE)
 
 
-CommandRunner = Callable[
-    [Sequence[str]],
-    subprocess.CompletedProcess[str],
-]
+CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 @dataclass(frozen=True)
@@ -92,7 +89,7 @@ class KindleIntegrityError(KindleSshError):
 
 
 def _subprocess_runner(
-    command: Sequence[str], *, timeout: int
+    command: Sequence[str], *, timeout: int, input: str | None = None
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         list(command),
@@ -100,6 +97,7 @@ def _subprocess_runner(
         capture_output=True,
         text=True,
         timeout=timeout,
+        input=input,
     )
 
 
@@ -108,7 +106,7 @@ class KindleSshTransport:
         self,
         config: KindleSshConfig,
         *,
-        runner: Callable[..., subprocess.CompletedProcess[str]] = _subprocess_runner,
+        runner: CommandRunner = _subprocess_runner,
     ) -> None:
         self.config = config
         self._runner = runner
@@ -222,9 +220,13 @@ class KindleSshTransport:
             f".{remote_path.name}.{local_sha256[:12]}.kindrop-part"
         )
         self._run_command_checked(
-            self._scp_command(local_path, temporary_path),
+            self._sftp_command(),
             timeout=self.config.command_timeout_seconds,
-            operation="Kindle SCP upload",
+            operation="Kindle SFTP upload",
+            input_text=(
+                f"put {self._sftp_quote(str(local_path))} "
+                f"{self._sftp_quote(str(temporary_path))}\nquit\n"
+            ),
         )
         hash_result = self._run_ssh_checked(
             f"sha256sum {shlex.quote(str(temporary_path))}"
@@ -287,10 +289,15 @@ class KindleSshTransport:
         )
 
     def _run_command_checked(
-        self, command: Sequence[str], *, timeout: int, operation: str
+        self,
+        command: Sequence[str],
+        *,
+        timeout: int,
+        operation: str,
+        input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         try:
-            result = self._run(command, timeout=timeout)
+            result = self._run(command, timeout=timeout, input_text=input_text)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise KindleSshError(f"{operation} failed: {error}") from error
         if result.returncode != 0:
@@ -299,9 +306,11 @@ class KindleSshTransport:
         return result
 
     def _run(
-        self, command: Sequence[str], *, timeout: int
+        self, command: Sequence[str], *, timeout: int, input_text: str | None = None
     ) -> subprocess.CompletedProcess[str]:
-        return self._runner(command, timeout=timeout)
+        if input_text is None:
+            return self._runner(command, timeout=timeout)
+        return self._runner(command, timeout=timeout, input=input_text)
 
     def _ssh_command(self, remote_command: str) -> list[str]:
         return [
@@ -316,19 +325,26 @@ class KindleSshTransport:
             remote_command,
         ]
 
-    def _scp_command(self, local_path: Path, remote_path: PurePosixPath) -> list[str]:
+    def _sftp_command(self) -> list[str]:
         return [
-            "scp",
+            "sftp",
+            "-b",
+            "-",
             "-P",
             str(self.config.port),
             "-i",
             str(self.config.key_path),
             *self._security_options(),
             f"-oConnectTimeout={self.config.connect_timeout_seconds}",
-            "--",
-            str(local_path),
-            f"{self.config.user}@{self.config.host}:{shlex.quote(str(remote_path))}",
+            f"{self.config.user}@{self.config.host}",
         ]
+
+    @staticmethod
+    def _sftp_quote(value: str) -> str:
+        if "\x00" in value or "\n" in value or "\r" in value:
+            raise ValueError("SFTP path contains unsupported characters")
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
 
     def _security_options(self) -> list[str]:
         return [

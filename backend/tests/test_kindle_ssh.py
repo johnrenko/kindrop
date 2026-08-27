@@ -17,9 +17,13 @@ class FakeCommandRunner:
     def __init__(self, results: list[subprocess.CompletedProcess[str]]) -> None:
         self.results = results
         self.commands: list[list[str]] = []
+        self.inputs: list[str | None] = []
 
-    def __call__(self, command: Sequence[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+    def __call__(
+        self, command: Sequence[str], *, timeout: int, **kwargs
+    ) -> subprocess.CompletedProcess[str]:
         self.commands.append(list(command))
+        self.inputs.append(kwargs.get("input"))
         return self.results.pop(0)
 
 
@@ -135,10 +139,17 @@ def test_delivery_verifies_sha256_before_atomically_publishing_file(tmp_path: Pa
     )
     assert receipt.sha256 == expected_sha256
     assert receipt.size_bytes == 5
-    scp_command = runner.commands[2]
-    assert scp_command[0] == "scp"
-    assert "-oStrictHostKeyChecking=yes" in scp_command
-    assert f"-oUserKnownHostsFile={tmp_path / 'known_hosts'}" in scp_command
+    sftp_command = runner.commands[2]
+    assert sftp_command[0] == "sftp"
+    assert "-b" in sftp_command
+    assert "-oStrictHostKeyChecking=yes" in sftp_command
+    assert f"-oUserKnownHostsFile={tmp_path / 'known_hosts'}" in sftp_command
+    assert runner.inputs[2] == (
+        f'put "{source}" '
+        '"/mnt/us/documents/KOReader/Kindrop/One Piece/'
+        '.001 - Romance Dawn.cbz.7e002e1ba02e.kindrop-part"\nquit\n'
+    )
+    assert not any(command[0] == "scp" for command in runner.commands)
     assert runner.commands[3][0] == "ssh"
     assert "sha256sum" in runner.commands[3][-1]
     assert runner.commands[4][0] == "ssh"
