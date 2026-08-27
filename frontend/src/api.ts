@@ -1,5 +1,6 @@
 import type {
   Candidate,
+  CandidateSeries,
   CandidateOption,
   ConversionPreset,
   DriveFolder,
@@ -84,6 +85,17 @@ export const api = {
   pauseScan: (id: string) => request(`/api/scans/${id}/pause`, { method: "POST" }),
   resumeScan: (id: string) => request(`/api/scans/${id}/resume`, { method: "POST" }),
   candidates: () => request<Candidate[]>("/api/candidates"),
+  candidateSeries: () => request<CandidateSeries[]>("/api/candidate-series"),
+  applyCandidateSeries: (
+    groupId: string,
+    candidateIds: string[],
+    series: string,
+    metadata: { author?: string | null; cover_url?: string | null } = {},
+  ) =>
+    request<Candidate[]>("/api/candidate-series", {
+      method: "PATCH",
+      body: JSON.stringify({ group_id: groupId, candidate_ids: candidateIds, series, ...metadata }),
+    }),
   updateCandidate: (id: string, update: CandidateUpdate) =>
     request<Candidate>(`/api/candidates/${id}`, {
       method: "PATCH",

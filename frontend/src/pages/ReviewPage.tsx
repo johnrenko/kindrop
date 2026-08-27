@@ -4,6 +4,7 @@ import { ArrowDownAZ, BookOpen, Check, ChevronRight, Search, Send, Sparkles, X }
 
 import { api, formatBytes, type CandidateUpdate } from "../api";
 import { EmptyState } from "../components/EmptyState";
+import { SeriesImport } from "../components/SeriesImport";
 import { StatusBadge } from "../components/StatusBadge";
 import { queryKeys } from "../query";
 import type { Candidate, ConversionPreset, MangaMatch } from "../types";
@@ -137,6 +138,7 @@ export function ReviewPage() {
         </EmptyState>
       ) : (
         <>
+          <SeriesImport />
           <div className="review-toolbar">
             <label className="check-all">
               <input

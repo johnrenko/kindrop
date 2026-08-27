@@ -149,6 +149,33 @@ class CandidateUpdate(BaseModel):
     optimize: bool | None = None
 
 
+class CandidateSeriesMemberRead(BaseModel):
+    candidate_id: str
+    name: str
+    number: int
+
+
+class CandidateSeriesRead(BaseModel):
+    id: str
+    suggested_series: str | None
+    confidence: Literal["high", "folder", "needs_name"]
+    ready_count: int
+    known_count: int
+    first_volume: int
+    last_volume: int
+    missing_volumes: list[int]
+    duplicate_volumes: list[int]
+    members: list[CandidateSeriesMemberRead]
+
+
+class CandidateSeriesApply(BaseModel):
+    group_id: str = Field(min_length=1)
+    candidate_ids: list[str] = Field(min_length=1)
+    series: str = Field(min_length=1, max_length=500)
+    author: str | None = Field(default=None, max_length=500)
+    cover_url: str | None = Field(default=None, max_length=2000)
+
+
 class MangaMatchRead(BaseModel):
     anilist_id: int
     title: str

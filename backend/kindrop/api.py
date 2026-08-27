@@ -39,7 +39,13 @@ from .kindle_ssh import (
     KindleSshTransport,
     KindleStorageItemNotFoundError,
 )
-from .metadata import ArchiveMetadataError, format_kindle_title, volume_number
+from .metadata import (
+    ArchiveMetadataError,
+    clean_title,
+    format_kindle_title,
+    inferred_series_name,
+    volume_number,
+)
 from .models import (
     AppSettings,
     Artifact,
@@ -55,6 +61,9 @@ from .oauth import authorization_url, exchange_code, validate_client_config
 from .preview import extract_preview
 from .schemas import (
     CandidateRead,
+    CandidateSeriesApply,
+    CandidateSeriesMemberRead,
+    CandidateSeriesRead,
     CandidateUpdate,
     FolderPageRead,
     GoogleClientPayload,
@@ -119,6 +128,111 @@ def _settings(session: Session) -> AppSettings:
         session.add(settings)
         session.flush()
     return settings
+
+
+def _series_key(series: str | None, path: str) -> tuple[str, str | None, str]:
+    if series:
+        normalized = "-".join(series.casefold().split())
+        return f"series:{normalized}", series, "high"
+    parent = PurePosixPath(path).parent
+    if str(parent) not in {"", "."}:
+        folder = clean_title(parent.name)
+        normalized_path = "/".join(
+            "-".join(part.casefold().split())
+            for part in parent.parts
+            if part not in {"", ".", "/"}
+        )
+        return f"folder:{normalized_path}", folder, "folder"
+    return "generic:root", None, "needs_name"
+
+
+def _candidate_volume_number(candidate: Candidate) -> int | None:
+    metadata = dict(candidate.comic_metadata or {})
+    number_text = str(metadata.get("number") or "").strip()
+    return (
+        int(number_text)
+        if number_text.isdigit()
+        else volume_number(candidate.revision.name)
+    )
+
+
+def _candidate_series_suggestions(
+    session: Session,
+    *,
+    group_id: str | None = None,
+) -> list[CandidateSeriesRead]:
+    candidates = session.scalars(
+        select(Candidate)
+        .options(selectinload(Candidate.revision))
+        .where(Candidate.status.not_in(["ignored", "invalid", "failed", "cancelled"]))
+        .order_by(Candidate.created_at)
+    ).all()
+    groups: dict[str, dict] = {}
+    for candidate in candidates:
+        metadata = dict(candidate.comic_metadata or {})
+        number = _candidate_volume_number(candidate)
+        if number is None:
+            continue
+        inferred = metadata.get("series") or inferred_series_name(candidate.revision.name)
+        key, suggested_series, confidence = _series_key(inferred, candidate.revision.path)
+        group = groups.setdefault(
+            key,
+            {
+                "suggested_series": suggested_series,
+                "confidence": confidence,
+                "known": [],
+                "ready": [],
+            },
+        )
+        group["known"].append((number, candidate))
+        if candidate.status == "ready":
+            group["ready"].append((number, candidate))
+
+    suggestions: list[CandidateSeriesRead] = []
+    for key, group in groups.items():
+        if group_id is not None and key != group_id:
+            continue
+        ready = group["ready"]
+        known = group["known"]
+        if not ready or len(known) < 2:
+            continue
+        if all(
+            (candidate.comic_metadata or {}).get("series")
+            and str((candidate.comic_metadata or {}).get("number") or "").strip()
+            for _, candidate in ready
+        ):
+            continue
+        counts: dict[int, int] = {}
+        for number, _candidate in known:
+            counts[number] = counts.get(number, 0) + 1
+        first = min(counts)
+        last = max(counts)
+        suggestions.append(
+            CandidateSeriesRead(
+                id=key,
+                suggested_series=group["suggested_series"],
+                confidence=group["confidence"],
+                ready_count=len(ready),
+                known_count=len(known),
+                first_volume=first,
+                last_volume=last,
+                missing_volumes=[
+                    number for number in range(first, last + 1) if number not in counts
+                ],
+                duplicate_volumes=[number for number, count in counts.items() if count > 1],
+                members=[
+                    CandidateSeriesMemberRead(
+                        candidate_id=candidate.id,
+                        name=candidate.revision.name,
+                        number=number,
+                    )
+                    for number, candidate in sorted(
+                        ready, key=lambda item: (item[0], item[1].revision.name)
+                    )
+                ],
+            )
+        )
+    return sorted(suggestions, key=lambda item: (-item.ready_count, item.id))
 
 
 def _candidate_read(candidate: Candidate) -> CandidateRead:
@@ -722,6 +836,70 @@ def create_app(
             except ArchiveMetadataError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
         return FileResponse(preview_path, media_type="image/jpeg")
+
+    @app.get("/api/candidate-series", response_model=list[CandidateSeriesRead])
+    def candidate_series(
+        session: Session = Depends(session_dependency),
+    ) -> list[CandidateSeriesRead]:
+        return _candidate_series_suggestions(session)
+
+    @app.patch("/api/candidate-series", response_model=list[CandidateRead])
+    def apply_candidate_series(
+        payload: CandidateSeriesApply,
+        session: Session = Depends(session_dependency),
+    ) -> list[CandidateRead]:
+        if payload.cover_url and not payload.cover_url.startswith("https://"):
+            raise HTTPException(status_code=422, detail="The cover URL must use https")
+        suggestions = _candidate_series_suggestions(session, group_id=payload.group_id)
+        suggestion = suggestions[0] if suggestions else None
+        expected_ids = (
+            [member.candidate_id for member in suggestion.members] if suggestion else []
+        )
+        if payload.candidate_ids != expected_ids:
+            raise HTTPException(
+                status_code=409,
+                detail="The detected series group changed; review it again before applying",
+            )
+        selected = session.scalars(
+            select(Candidate)
+            .options(selectinload(Candidate.revision))
+            .where(Candidate.id.in_(payload.candidate_ids))
+        ).all()
+        by_id = {candidate.id: candidate for candidate in selected}
+        if len(by_id) != len(payload.candidate_ids) or any(
+            candidate.status != "ready" for candidate in selected
+        ):
+            raise HTTPException(status_code=409, detail="Every series member must be ready")
+        ordered = [by_id[candidate_id] for candidate_id in payload.candidate_ids]
+        numbers: list[int] = []
+        for candidate in ordered:
+            number = _candidate_volume_number(candidate)
+            if number is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Kindrop could not infer a volume number for {candidate.revision.name}",
+                )
+            numbers.append(number)
+
+        series = " ".join(payload.series.split())
+        if not series:
+            raise HTTPException(status_code=422, detail="The series title is required")
+        for candidate, number in zip(ordered, numbers, strict=True):
+            metadata = dict(candidate.comic_metadata or {})
+            metadata["series"] = series
+            metadata["number"] = str(number)
+            if "author" in payload.model_fields_set:
+                metadata["author"] = (payload.author or "").strip() or None
+            if "cover_url" in payload.model_fields_set:
+                metadata["cover_url"] = (payload.cover_url or "").strip() or None
+            candidate.comic_metadata = metadata
+            candidate.resolved_title = format_kindle_title(
+                series,
+                str(number),
+                metadata.get("title") or clean_title(Path(candidate.revision.name).stem),
+            )
+        session.commit()
+        return [_candidate_read(candidate) for candidate in ordered]
 
     @app.get("/api/metadata/search", response_model=list[MangaMatchRead])
     def metadata_search(query: str = Query(min_length=1, max_length=200)) -> list[MangaMatchRead]:

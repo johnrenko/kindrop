@@ -14,6 +14,7 @@ _BRACKETED_TAGS = re.compile(r"\[[^\]]*\]|\{[^}]*\}|\([^)]*\)")
 _VOLUME_MARKER = re.compile(r"\b(?:v(?:ol(?:ume)?)?|t(?:ome)?)[.\s]*0*(\d{1,4})\b", re.IGNORECASE)
 _CHAPTER_MARKER = re.compile(r"\b(?:c(?:h(?:ap(?:ter)?)?)?)[.\s]*0*(\d{1,4})\b", re.IGNORECASE)
 _VOLUME_IN_NAME = re.compile(r"\bvolume[.\s]*0*(\d{1,4})\b", re.IGNORECASE)
+_TRAILING_VOLUME = re.compile(r"^(?P<series>.+?)[\s._-]+0*(?P<number>\d{1,4})$", re.IGNORECASE)
 
 
 def _volume_label(match: re.Match[str]) -> str:
@@ -54,7 +55,27 @@ def volume_number(filename: str) -> int | None:
     """Extract the volume number from a release filename, or None."""
     stem = Path(filename).stem
     match = _VOLUME_IN_NAME.search(stem) or _VOLUME_MARKER.search(stem)
-    return int(match.group(1)) if match else None
+    if match:
+        return int(match.group(1))
+    trailing = _TRAILING_VOLUME.match(stem.strip())
+    return int(trailing.group("number")) if trailing else None
+
+
+def inferred_series_name(filename: str) -> str | None:
+    """Infer a repeated series prefix without guessing from a generic volume name."""
+    stem = Path(filename).stem.strip()
+    marker = _VOLUME_IN_NAME.search(stem) or _VOLUME_MARKER.search(stem)
+    if marker:
+        prefix = stem[: marker.start()]
+    else:
+        trailing = _TRAILING_VOLUME.match(stem)
+        if not trailing:
+            return None
+        prefix = trailing.group("series")
+    if not prefix.strip(" -_.~+"):
+        return None
+    title = clean_title(prefix)
+    return title if any(character.isalpha() for character in title) else None
 
 
 class ArchiveMetadataError(ValueError):

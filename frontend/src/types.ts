@@ -102,6 +102,25 @@ export interface Candidate {
   optimize: boolean;
 }
 
+export interface CandidateSeriesMember {
+  candidate_id: string;
+  name: string;
+  number: number;
+}
+
+export interface CandidateSeries {
+  id: string;
+  suggested_series: string | null;
+  confidence: "high" | "folder" | "needs_name";
+  ready_count: number;
+  known_count: number;
+  first_volume: number;
+  last_volume: number;
+  missing_volumes: number[];
+  duplicate_volumes: number[];
+  members: CandidateSeriesMember[];
+}
+
 export interface Delivery {
   id: string;
   status: string;

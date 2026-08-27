@@ -11,6 +11,7 @@ export function useLiveEvents() {
     const refresh = () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.scans });
       void queryClient.invalidateQueries({ queryKey: queryKeys.candidates });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.candidateSeries });
       void queryClient.invalidateQueries({ queryKey: queryKeys.jobs });
     };
     [
@@ -28,4 +29,3 @@ export function useLiveEvents() {
     return () => source.close();
   }, [queryClient]);
 }
-

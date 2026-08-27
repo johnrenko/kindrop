@@ -386,6 +386,165 @@ def test_candidate_metadata_edit_rejects_plain_http_cover(tmp_path) -> None:
     assert response.status_code == 422
 
 
+def test_candidate_series_suggestions_group_ready_volumes_and_include_known_history(
+    tmp_path,
+) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        first = _seed_ready(session, "Volume 01.cbz", path="Volume 01.cbz")
+        third = _seed_ready(session, "Volume 03.cbz", path="Volume 03.cbz")
+        _seed_ready(
+            session,
+            "Volume 02.cbz",
+            path="Volume 02.cbz",
+            status="sent",
+        )
+        session.commit()
+
+    response = TestClient(app).get("/api/candidate-series")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": "generic:root",
+            "suggested_series": None,
+            "confidence": "needs_name",
+            "ready_count": 2,
+            "known_count": 3,
+            "first_volume": 1,
+            "last_volume": 3,
+            "missing_volumes": [],
+            "duplicate_volumes": [],
+            "members": [
+                {"candidate_id": first, "name": "Volume 01.cbz", "number": 1},
+                {"candidate_id": third, "name": "Volume 03.cbz", "number": 3},
+            ],
+        }
+    ]
+
+
+def test_candidate_series_suggestions_keep_same_named_folders_separate(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        _seed_ready(
+            session,
+            "Volume 01 [Publisher A].cbz",
+            path="Publisher A/Volumes/Volume 01 [Publisher A].cbz",
+        )
+        _seed_ready(
+            session,
+            "Volume 02 [Publisher A].cbz",
+            path="Publisher A/Volumes/Volume 02 [Publisher A].cbz",
+        )
+        _seed_ready(
+            session,
+            "Volume 01 [Publisher B].cbz",
+            path="Publisher B/Volumes/Volume 01 [Publisher B].cbz",
+        )
+        _seed_ready(
+            session,
+            "Volume 02 [Publisher B].cbz",
+            path="Publisher B/Volumes/Volume 02 [Publisher B].cbz",
+        )
+        session.commit()
+
+    response = TestClient(app).get("/api/candidate-series")
+
+    assert response.status_code == 200
+    assert {(item["id"], item["ready_count"]) for item in response.json()} == {
+        ("folder:publisher-a/volumes", 2),
+        ("folder:publisher-b/volumes", 2),
+    }
+
+
+def test_candidate_series_apply_updates_every_ready_member_from_one_match(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        volume_18 = _seed_ready(session, "Blue Lock 18.cbz")
+        volume_19 = _seed_ready(session, "Blue Lock 19.cbz")
+        session.commit()
+
+    response = TestClient(app).patch(
+        "/api/candidate-series",
+        json={
+            "group_id": "series:blue-lock",
+            "candidate_ids": [volume_18, volume_19],
+            "series": "Blue Lock",
+            "author": "Muneyuki Kaneshiro",
+            "cover_url": "https://img.anili.st/blue-lock.jpg",
+        },
+    )
+
+    assert response.status_code == 200
+    assert [item["resolved_title"] for item in response.json()] == [
+        "Blue Lock, Tome 18",
+        "Blue Lock, Tome 19",
+    ]
+    assert [item["metadata"]["number"] for item in response.json()] == ["18", "19"]
+    assert all(
+        item["metadata"]["author"] == "Muneyuki Kaneshiro" for item in response.json()
+    )
+
+
+def test_candidate_series_apply_rejects_a_partial_detected_group(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    with database.session() as session:
+        volume_18 = _seed_ready(session, "Blue Lock 18.cbz")
+        volume_19 = _seed_ready(session, "Blue Lock 19.cbz")
+        session.commit()
+
+    response = TestClient(app).patch(
+        "/api/candidate-series",
+        json={
+            "group_id": "series:blue-lock",
+            "candidate_ids": [volume_18],
+            "series": "Blue Lock",
+        },
+    )
+
+    assert response.status_code == 409
+    with database.session() as session:
+        candidates = session.scalars(select(Candidate).order_by(Candidate.id)).all()
+        assert [candidate.comic_metadata for candidate in candidates] == [{}, {}]
+        assert {candidate.id for candidate in candidates} == {volume_18, volume_19}
+
+
+def test_candidate_series_folder_group_id_round_trips_for_long_paths(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    app = create_app(database)
+    folder = "Long shelf " + "ﬃ" * 1000
+    with database.session() as session:
+        first = _seed_ready(
+            session,
+            "Volume 01 [first].cbz",
+            path=f"{folder}/Volume 01 [first].cbz",
+        )
+        second = _seed_ready(
+            session,
+            "Volume 02 [second].cbz",
+            path=f"{folder}/Volume 02 [second].cbz",
+        )
+        session.commit()
+
+    client = TestClient(app)
+    group = client.get("/api/candidate-series").json()[0]
+    response = client.patch(
+        "/api/candidate-series",
+        json={
+            "group_id": group["id"],
+            "candidate_ids": [first, second],
+            "series": "Long Shelf",
+        },
+    )
+
+    assert len(group["id"]) > 2007
+    assert response.status_code == 200
+
+
 def test_candidate_status_edit_keeps_the_title_override(tmp_path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'test.db'}")
     app = create_app(database)
@@ -650,20 +809,27 @@ def test_running_scan_receives_pause_and_cancel_requests(tmp_path) -> None:
         assert session.get(Scan, scan_id).cancel_requested is True
 
 
-def _seed_ready(session, name: str, series: str | None = None) -> str:
+def _seed_ready(
+    session,
+    name: str,
+    series: str | None = None,
+    *,
+    path: str | None = None,
+    status: str = "ready",
+) -> str:
     revision = Revision(
         drive_file_id=f"drive-{name}",
         fingerprint=f"fp-{name}",
         name=name,
-        path=f"Manga/{name}",
+        path=path or f"Manga/{name}",
         size=1,
-        status="candidate",
+        status="candidate" if status == "ready" else status,
     )
     session.add(revision)
     session.flush()
     candidate = Candidate(
         revision_id=revision.id,
-        status="ready",
+        status=status,
         resolved_title=name,
         comic_metadata={"series": series} if series else {},
     )

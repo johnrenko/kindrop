@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -28,6 +28,7 @@ const candidates = [1, 2, 3, 4, 5].map(makeCandidate);
 
 const payloads: Record<string, unknown> = {
   "/api/candidates": candidates,
+  "/api/candidate-series": [],
   "/api/settings": {
     google_email: "reader@example.com",
     source_folder_id: "drive-folder",
@@ -137,5 +138,83 @@ describe("Review preparation choices", () => {
 
     expect(await screen.findByRole("checkbox", { name: "Optimize Guide.pdf" })).toBeChecked();
     expect(screen.getByText("EPUB · Sends unchanged")).toBeInTheDocument();
+  });
+
+  it("matches series metadata once and applies it to every detected volume", async () => {
+    const seriesCandidates = [18, 19].map((index) => ({
+      ...makeCandidate(index),
+      resolved_title: `Blue Lock ${index}`,
+      metadata: { title: null, series: null, number: null, author: null, cover_url: null },
+      name: `Blue Lock ${index}.cbz`,
+      path: `Blue Lock ${index}.cbz`,
+    }));
+    const requestBodies: unknown[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path === "/api/candidates") return Response.json(seriesCandidates);
+      if (path === "/api/settings") return Response.json(payloads[path]);
+      if (path === "/api/candidate-series" && init?.method === "PATCH") {
+        requestBodies.push(JSON.parse(String(init.body)));
+        return Response.json(seriesCandidates);
+      }
+      if (path === "/api/candidate-series") {
+        return Response.json([
+          {
+            id: "series:blue-lock",
+            suggested_series: "Blue Lock",
+            confidence: "high",
+            ready_count: 2,
+            known_count: 2,
+            first_volume: 18,
+            last_volume: 19,
+            missing_volumes: [],
+            duplicate_volumes: [],
+            members: seriesCandidates.map((candidate, offset) => ({
+              candidate_id: candidate.id,
+              name: candidate.name,
+              number: 18 + offset,
+            })),
+          },
+        ]);
+      }
+      if (path === "/api/metadata/search?query=Blue%20Lock") {
+        return Response.json([
+          {
+            anilist_id: 49596,
+            title: "Blue Lock",
+            native_title: "ブルーロック",
+            author: "Muneyuki Kaneshiro",
+            cover_url: "https://img.anili.st/blue-lock.jpg",
+            format: "MANGA",
+            year: 2018,
+          },
+        ]);
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ReviewPage />
+      </QueryClientProvider>,
+    );
+
+    const user = userEvent.setup();
+    expect(await screen.findByRole("heading", { name: "Smart series import" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Match metadata for Blue Lock" }));
+    await user.click(screen.getByRole("button", { name: "Search AniList" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Apply Blue Lock to 2 candidates" }),
+    );
+
+    await waitFor(() => expect(requestBodies).toEqual([
+      {
+        group_id: "series:blue-lock",
+        candidate_ids: ["cand-18", "cand-19"],
+        series: "Blue Lock",
+        author: "Muneyuki Kaneshiro",
+        cover_url: "https://img.anili.st/blue-lock.jpg",
+      },
+    ]));
   });
 });
