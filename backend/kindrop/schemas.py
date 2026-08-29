@@ -201,6 +201,7 @@ class CandidateRead(BaseModel):
     cache_expires_at: datetime | None
     error: str | None
     drive_file_id: str
+    source_type: str
     name: str
     path: str
     size: int

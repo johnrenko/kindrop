@@ -63,6 +63,11 @@ export const api = {
       body,
     });
   },
+  uploadLocalFile: (file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    return request<Candidate>("/api/local-files", { method: "POST", body });
+  },
   renameKindleItem: (path: string, newName: string) =>
     request<{ path: string }>("/api/kindle/files/rename", {
       method: "POST",

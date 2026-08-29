@@ -95,6 +95,7 @@ export interface Candidate {
   cache_expires_at: string | null;
   error: string | null;
   drive_file_id: string;
+  source_type: "drive" | "local";
   name: string;
   path: string;
   size: number;

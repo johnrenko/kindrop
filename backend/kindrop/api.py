@@ -2,6 +2,7 @@ import asyncio
 import json
 import shutil
 import tempfile
+import uuid
 from collections.abc import AsyncIterator, Callable, Generator
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -30,7 +31,7 @@ from .anilist import AniListError, search_manga
 from .config import RuntimeSettings
 from .crypto import SecretStore
 from .database import Database
-from .domain import ConversionPreset
+from .domain import COMIC_SUFFIXES, ConversionPreset
 from .google import GoogleDriveGateway, GoogleGmailGateway, GoogleServiceFactory
 from .kindle_ssh import (
     KindleCollisionError,
@@ -84,7 +85,7 @@ from .schemas import (
     SshStatus,
     SshTrustRequest,
 )
-from .services import add_event
+from .services import LocalCandidateConflict, add_event, stage_local_candidate
 
 KINDLE_PROFILES = [
     {"id": "KPW", "name": "Kindle Paperwhite 1 / 2"},
@@ -247,6 +248,7 @@ def _candidate_read(candidate: Candidate) -> CandidateRead:
         cache_expires_at=candidate.cache_expires_at,
         error=candidate.error,
         drive_file_id=revision.drive_file_id,
+        source_type=revision.source_type,
         name=revision.name,
         path=revision.path,
         size=revision.size,
@@ -784,6 +786,43 @@ def create_app(
         if scan_id:
             query = query.where(Candidate.scan_id == scan_id)
         return [_candidate_read(item) for item in session.scalars(query).all()]
+
+    @app.post("/api/local-files", response_model=CandidateRead, status_code=status.HTTP_201_CREATED)
+    def upload_local_file(
+        file: UploadFile = File(...),
+        session: Session = Depends(session_dependency),
+    ) -> CandidateRead:
+        """Stage one browser-selected archive as a Candidate without using Drive."""
+        filename = Path(file.filename or "").name
+        suffix = Path(filename).suffix.lower()
+        if not filename or suffix not in COMIC_SUFFIXES:
+            allowed = ", ".join(sorted(COMIC_SUFFIXES))
+            raise HTTPException(
+                status_code=422, detail=f"Choose a supported comic archive: {allowed}"
+            )
+
+        upload_directory = runtime.cache_root / "uploads"
+        upload_directory.mkdir(parents=True, exist_ok=True)
+        destination = upload_directory / f"{uuid.uuid4()}-{filename}"
+        try:
+            with destination.open("xb") as target:
+                while chunk := file.file.read(1024 * 1024):
+                    target.write(chunk)
+            candidate = stage_local_candidate(session, destination, filename)
+            session.commit()
+            session.refresh(candidate)
+            return _candidate_read(candidate)
+        except HTTPException:
+            destination.unlink(missing_ok=True)
+            raise
+        except LocalCandidateConflict as error:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except (ArchiveMetadataError, OSError, ValueError) as error:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        finally:
+            file.file.close()
 
     @app.patch("/api/candidates/{candidate_id}", response_model=CandidateRead)
     def update_candidate(

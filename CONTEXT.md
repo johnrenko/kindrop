@@ -8,8 +8,9 @@ Kindrop prepares personal comic archives from Google Drive for a single Kindle l
 The folder in My Drive whose descendant comic archives Kindrop inspects without modifying them.
 _Avoid_: Inbox, watched folder
 
-**Drive File Revision**:
-A specific immutable version of a comic archive, identified by its Drive file identity and content fingerprint.
+**Source Revision**:
+A specific immutable version of a comic archive from Drive or a local browser upload, identified by
+its source identity and content fingerprint.
 _Avoid_: File, comic version
 
 **Scan**:
@@ -17,7 +18,7 @@ A user-initiated inspection of the Source Folder that discovers and prepares new
 _Avoid_: Sync, watch
 
 **Candidate**:
-A newly discovered Drive File Revision that is ready for review before conversion.
+A newly ingested Source Revision that is ready for review before conversion.
 _Avoid_: Pending file, queue item
 
 **Conversion Batch**:

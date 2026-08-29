@@ -86,6 +86,7 @@ class Revision(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     drive_file_id: Mapped[str] = mapped_column(String(200), index=True)
+    source_type: Mapped[str] = mapped_column(String(16), default="drive", index=True)
     fingerprint: Mapped[str] = mapped_column(String(500))
     checksum: Mapped[str | None] = mapped_column(String(100))
     name: Mapped[str] = mapped_column(String(500))

@@ -95,6 +95,10 @@ class PermanentSendError(RuntimeError):
     """Gmail rejected the request outright, so no message was created and no retry can help."""
 
 
+class LocalCandidateConflict(ValueError):
+    """A local archive cannot be staged while its current Candidate is active."""
+
+
 def _safe_filename(file_id: str, name: str) -> str:
     safe_id = "".join(
         character for character in file_id if character.isalnum() or character in "-_"
@@ -124,8 +128,76 @@ def _checksum(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def add_event(session, topic: str, entity_id: str, kind: str, **payload) -> None:
     session.add(Event(topic=topic, entity_id=entity_id, kind=kind, payload=payload))
+
+
+def stage_local_candidate(session, source: Path, filename: str) -> Candidate:
+    """Validate a staged local archive and make it available to the shared review flow."""
+    size = source.stat().st_size
+    if size == 0:
+        raise ValueError("The selected file is empty")
+    checksum = _sha256(source)
+    source_id = f"local:{checksum}"
+    fingerprint = revision_fingerprint(source_id, checksum, size, checksum)
+    existing = session.scalar(select(Revision).where(Revision.fingerprint == fingerprint))
+    if existing:
+        candidate = session.scalar(select(Candidate).where(Candidate.revision_id == existing.id))
+        if candidate is None or candidate.status in {"queued", "downloading", "converting"}:
+            raise LocalCandidateConflict("This local archive is already being processed")
+        if candidate.status == "ready":
+            raise LocalCandidateConflict("This local archive is already waiting for review")
+        candidate.status = "ready"
+        candidate.error = None
+        candidate.cache_path = str(source)
+        candidate.cache_expires_at = None
+        existing.status = "candidate"
+        add_event(
+            session,
+            "candidate",
+            candidate.id,
+            "candidate.local_reuploaded",
+            filename=filename,
+        )
+        return candidate
+
+    metadata = read_comic_metadata(source)
+    revision = Revision(
+        drive_file_id=source_id,
+        source_type="local",
+        fingerprint=fingerprint,
+        checksum=checksum,
+        name=filename,
+        path=f"Local uploads/{filename}",
+        size=size,
+        modified_time=datetime.now(UTC).isoformat(),
+        status="candidate",
+    )
+    session.add(revision)
+    session.flush()
+    candidate = Candidate(
+        revision_id=revision.id,
+        status="ready",
+        comic_metadata={
+            "title": metadata.title,
+            "series": metadata.series,
+            "number": metadata.number,
+        },
+        resolved_title=metadata.resolved_title(clean_title(Path(filename).stem)),
+        cache_path=str(source),
+    )
+    session.add(candidate)
+    session.flush()
+    add_event(session, "candidate", candidate.id, "candidate.local_uploaded", filename=filename)
+    return candidate
 
 
 class ScanProcessor:

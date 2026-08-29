@@ -1,9 +1,11 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from kindrop.api import create_app
+from kindrop.config import RuntimeSettings
 from kindrop.database import Database
 from kindrop.models import (
     AppSettings,
@@ -270,6 +272,74 @@ def test_kindle_file_browser_uploads_and_removes_its_local_temporary_file(tmp_pa
     assert captured["destination"] == "/mnt/us/documents/KOReader"
     assert captured["filename"] == "manual.cbz"
     assert captured["local_path"].exists() is False
+
+
+def test_local_archive_upload_creates_a_ready_candidate(tmp_path, make_pdf) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    runtime = RuntimeSettings(cache_root=tmp_path / "cache", frontend_dist=tmp_path / "frontend")
+    source = tmp_path / "guide.pdf"
+    make_pdf(source)
+
+    response = TestClient(create_app(database, runtime=runtime)).post(
+        "/api/local-files",
+        files={"file": ("guide.pdf", source.read_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "ready"
+    assert body["source_type"] == "local"
+    assert body["name"] == "guide.pdf"
+    assert body["path"] == "Local uploads/guide.pdf"
+    with database.session() as session:
+        candidate = session.get(Candidate, body["id"])
+        assert candidate is not None
+        assert Path(candidate.cache_path).is_file()
+
+
+def test_local_upload_rejects_unsupported_and_duplicate_archives(tmp_path, make_pdf) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    runtime = RuntimeSettings(cache_root=tmp_path / "cache", frontend_dist=tmp_path / "frontend")
+    client = TestClient(create_app(database, runtime=runtime))
+    source = tmp_path / "guide.pdf"
+    make_pdf(source)
+
+    unsupported = client.post(
+        "/api/local-files", files={"file": ("guide.txt", b"no", "text/plain")}
+    )
+    assert unsupported.status_code == 422
+    first = client.post(
+        "/api/local-files",
+        files={"file": ("guide.pdf", source.read_bytes(), "application/pdf")},
+    )
+    assert first.status_code == 201
+    duplicate = client.post(
+        "/api/local-files",
+        files={"file": ("another-name.pdf", source.read_bytes(), "application/pdf")},
+    )
+    assert duplicate.status_code == 409
+
+
+def test_local_upload_reactivates_an_archive_that_was_ignored(tmp_path, make_pdf) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    runtime = RuntimeSettings(cache_root=tmp_path / "cache", frontend_dist=tmp_path / "frontend")
+    client = TestClient(create_app(database, runtime=runtime))
+    source = tmp_path / "guide.pdf"
+    make_pdf(source)
+    payload = {"file": ("guide.pdf", source.read_bytes(), "application/pdf")}
+    first = client.post("/api/local-files", files=payload)
+    assert first.status_code == 201
+    with database.session() as session:
+        candidate = session.get(Candidate, first.json()["id"])
+        candidate.status = "ignored"
+        candidate.revision.status = "ignored"
+        session.commit()
+
+    repeated = client.post("/api/local-files", files=payload)
+
+    assert repeated.status_code == 201
+    assert repeated.json()["id"] == first.json()["id"]
+    assert repeated.json()["status"] == "ready"
 
 
 def test_batch_creation_snapshots_preset_and_queues_selected_candidates(tmp_path) -> None:

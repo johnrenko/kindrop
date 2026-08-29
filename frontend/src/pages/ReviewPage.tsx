@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDownAZ, BookOpen, Check, ChevronRight, Search, Send, Sparkles, X } from "lucide-react";
+import { ArrowDownAZ, BookOpen, Check, ChevronRight, Search, Send, Sparkles, Upload, X } from "lucide-react";
 
 import { api, formatBytes, type CandidateUpdate } from "../api";
 import { EmptyState } from "../components/EmptyState";
@@ -32,6 +32,9 @@ export function ReviewPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [preset, setPreset] = useState<ConversionPreset | null>(null);
   const [mergeByVolume, setMergeByVolume] = useState(false);
+  const localUploadInput = useRef<HTMLInputElement>(null);
+  const [localUploadSummary, setLocalUploadSummary] = useState<string | null>(null);
+  const [localUploadError, setLocalUploadError] = useState<string | null>(null);
   useEffect(() => {
     if (settings.data && !preset) setPreset(settings.data.preset);
   }, [preset, settings.data]);
@@ -99,6 +102,16 @@ export function ReviewPage() {
       ]);
     },
   });
+  const localUpload = useMutation({
+    mutationFn: (files: File[]) => Promise.allSettled(files.map((file) => api.uploadLocalFile(file))),
+    onSuccess: async (results) => {
+      const uploaded = results.filter((result) => result.status === "fulfilled");
+      const failed = results.filter((result) => result.status === "rejected");
+      if (uploaded.length) setLocalUploadSummary(`${uploaded.length} local ${uploaded.length === 1 ? "archive is" : "archives are"} ready for review.`);
+      if (failed.length) setLocalUploadError(`${failed.length} ${failed.length === 1 ? "archive could" : "archives could"} not be added. ${(failed[0] as PromiseRejectedResult).reason.message}`);
+      await client.invalidateQueries({ queryKey: queryKeys.candidates });
+    },
+  });
 
   const toggle = (id: string, shiftKey = false) => {
     setSelected((current) => {
@@ -130,11 +143,36 @@ export function ReviewPage() {
         <span className="eyebrow">Candidate review</span>
         <h1>Choose what reaches<br /><em>the next shelf.</em></h1>
         <p className="lead">Metadata comes from ComicInfo.xml when available. Nothing leaves this desk until you confirm the batch.</p>
+        <div className="local-upload">
+          <button className="button button--primary" type="button" onClick={() => localUploadInput.current?.click()} disabled={localUpload.isPending}>
+            <Upload size={17} /> {localUpload.isPending ? "Adding local archives…" : "Add local archives"}
+          </button>
+          <input
+            ref={localUploadInput}
+            className="visually-hidden"
+            type="file"
+            accept=".cbz,.cbr,.pdf,.epub"
+            multiple
+            aria-label="Choose local comic archives"
+            onChange={(event) => {
+              const files = [...(event.target.files ?? [])];
+              event.currentTarget.value = "";
+              if (files.length) {
+                setLocalUploadSummary(null);
+                setLocalUploadError(null);
+                localUpload.mutate(files);
+              }
+            }}
+          />
+          <small>CBZ, CBR, PDF or EPUB. Originals stay on this computer.</small>
+          {localUploadSummary && <p className="local-upload__success" role="status">{localUploadSummary}</p>}
+          {(localUploadError || localUpload.error) && <p className="form-error">{localUploadError ?? localUpload.error?.message}</p>}
+        </div>
       </header>
 
       {!candidates.isLoading && ready.length === 0 ? (
         <EmptyState eyebrow="Review complete" title="No candidates are waiting">
-          <p>Run a new Drive scan when another volume is ready.</p>
+          <p>Add local archives above, or run a new Drive scan when another volume is ready.</p>
         </EmptyState>
       ) : (
         <>

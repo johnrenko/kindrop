@@ -16,6 +16,7 @@ function makeCandidate(index: number): Candidate {
     cache_expires_at: null,
     error: null,
     drive_file_id: `drive-${index}`,
+    source_type: "drive",
     name: `Naruto ${index}.cbz`,
     path: `Naruto/Naruto ${index}.cbz`,
     size: 1024,
@@ -61,6 +62,26 @@ async function findCheckboxes() {
 }
 
 describe("Review selection", () => {
+  it("adds browser-selected local archives to review", async () => {
+    const uploaded = { ...makeCandidate(6), name: "Local Guide.pdf", path: "Local uploads/Local Guide.pdf" };
+    const uploadedBodies: FormData[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (String(input) === "/api/local-files") {
+        uploadedBodies.push(init?.body as FormData);
+        return Response.json(uploaded, { status: 201 });
+      }
+      return Response.json(payloads[String(input)]);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><ReviewPage /></QueryClientProvider>);
+
+    await userEvent.upload(screen.getByLabelText("Choose local comic archives"), new File(["comic"], "Local Guide.pdf", { type: "application/pdf" }));
+
+    await screen.findByText("1 local archive is ready for review.");
+    expect(uploadedBodies).toHaveLength(1);
+    expect(uploadedBodies[0].get("file")).toBeInstanceOf(File);
+  });
+
   it("selects every new candidate by default", async () => {
     renderReview();
     const boxes = await findCheckboxes();
