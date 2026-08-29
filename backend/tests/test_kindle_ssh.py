@@ -1,6 +1,7 @@
 import stat
 import subprocess
 from collections.abc import Sequence
+from hashlib import sha256
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -19,12 +20,14 @@ class FakeCommandRunner:
         self.results = results
         self.commands: list[list[str]] = []
         self.inputs: list[str | None] = []
+        self.timeouts: list[int] = []
 
     def __call__(
         self, command: Sequence[str], *, timeout: int, **kwargs
     ) -> subprocess.CompletedProcess[str]:
         self.commands.append(list(command))
         self.inputs.append(kwargs.get("input"))
+        self.timeouts.append(timeout)
         return self.results.pop(0)
 
 
@@ -206,7 +209,7 @@ def test_browser_bulk_delete_rejects_the_storage_root_before_connecting(tmp_path
 def test_browser_uploads_a_local_file_atomically_into_the_selected_folder(tmp_path: Path):
     source = tmp_path / "manual.cbz"
     source.write_bytes(b"comic")
-    expected_sha256 = "7e002e1ba02e628e7422bd3017520effa8cc1638662efa78a78b6af1548eb575"
+    expected_sha256 = sha256(source.read_bytes()).hexdigest()
     runner = FakeCommandRunner(
         [
             completed(),
@@ -306,6 +309,27 @@ def test_delivery_verifies_sha256_before_atomically_publishing_file(tmp_path: Pa
     assert "sha256sum" in runner.commands[3][-1]
     assert runner.commands[4][0] == "ssh"
     assert "mv -f" in runner.commands[4][-1]
+
+
+def test_delivery_allows_a_slow_wifi_transfer_for_large_artifacts(tmp_path: Path):
+    source = tmp_path / "book.cbz"
+    source.touch()
+    with source.open("r+b") as file:
+        file.truncate(31 * 1024 * 1024)
+    expected_sha256 = sha256(source.read_bytes()).hexdigest()
+    runner = FakeCommandRunner(
+        [
+            completed(),
+            completed(stdout="MISSING\n"),
+            completed(),
+            completed(stdout=f"{expected_sha256}  temporary-file\n"),
+            completed(stdout="PUBLISHED\n"),
+        ]
+    )
+
+    KindleSshTransport(config(tmp_path), runner=runner).deliver(source, "book.cbz")
+
+    assert runner.timeouts[2] == 60 + 31 * 1024 * 1024 // (64 * 1024)
 
 
 def test_delivery_can_explicitly_replace_a_tracked_remote_file(tmp_path: Path):

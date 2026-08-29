@@ -20,6 +20,9 @@ _USER_PATTERN = re.compile(r"^[a-z_][a-z0-9_-]*$", re.IGNORECASE)
 _STORAGE_COLLISION_EXIT = 42
 _STORAGE_NOT_FOUND_EXIT = 44
 _STORAGE_BOUNDARY_EXIT = 45
+_SFTP_MIN_TRANSFER_BYTES_PER_SECOND = 64 * 1024
+_SFTP_TRANSFER_SETUP_SECONDS = 60
+_SFTP_MAX_TRANSFER_TIMEOUT_SECONDS = 60 * 60
 
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -422,7 +425,7 @@ class KindleSshTransport:
         )
         self._run_command_checked(
             self._sftp_command(),
-            timeout=self.config.command_timeout_seconds,
+            timeout=self._sftp_transfer_timeout(local_path),
             operation="Kindle SFTP upload",
             input_text=(
                 f"put {self._sftp_quote(str(local_path))} "
@@ -609,6 +612,18 @@ class KindleSshTransport:
             f"-oConnectTimeout={self.config.connect_timeout_seconds}",
             f"{self.config.user}@{self.config.host}",
         ]
+
+    def _sftp_transfer_timeout(self, local_path: Path) -> int:
+        """Allow slow Kindle Wi-Fi transfers without leaving them unbounded."""
+        estimated_seconds = (
+            _SFTP_TRANSFER_SETUP_SECONDS
+            + (local_path.stat().st_size + _SFTP_MIN_TRANSFER_BYTES_PER_SECOND - 1)
+            // _SFTP_MIN_TRANSFER_BYTES_PER_SECOND
+        )
+        return min(
+            _SFTP_MAX_TRANSFER_TIMEOUT_SECONDS,
+            max(self.config.command_timeout_seconds, estimated_seconds),
+        )
 
     @staticmethod
     def _sftp_quote(value: str) -> str:
