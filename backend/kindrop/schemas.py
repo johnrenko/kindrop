@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -109,6 +109,12 @@ class KindleStorageMoveRequest(BaseModel):
 
 class KindleStorageDeleteRequest(BaseModel):
     path: str = Field(min_length=1, max_length=2000)
+
+
+class KindleStorageBulkDeleteRequest(BaseModel):
+    paths: list[Annotated[str, Field(min_length=1, max_length=2000)]] = Field(
+        min_length=1
+    )
 
 
 class KindleStorageMutationRead(BaseModel):

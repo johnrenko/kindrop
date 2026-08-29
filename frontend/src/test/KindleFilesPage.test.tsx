@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -104,6 +104,67 @@ describe("Kindle files", () => {
       "/api/kindle/files/delete",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("selects multiple items and deletes them as one confirmed action", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const path = String(input);
+      if (path === "/api/kindle/files/bulk-delete") {
+        return new Response(null, { status: 204 });
+      }
+      return Response.json(rootListing);
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderPage();
+
+    await screen.findByText("4.0 KB");
+    await userEvent.click(screen.getByRole("checkbox", { name: "Select documents" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Select book.cbz" }));
+
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      "Delete 2 selected items from the Kindle? This cannot be undone.",
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/kindle/files/bulk-delete",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ paths: ["/mnt/us/documents", "/mnt/us/book.cbz"] }),
+      }),
+    );
+    expect(await screen.findByText("2 items deleted from the Kindle.")).toBeInTheDocument();
+    expect(screen.queryByText("2 selected")).not.toBeInTheDocument();
+  });
+
+  it("selects a contiguous range with shift-click", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({
+      ...rootListing,
+      items: [
+        rootListing.items[0],
+        rootListing.items[1],
+        {
+          name: "second.cbz",
+          path: "/mnt/us/second.cbz",
+          kind: "file",
+          size_bytes: 8192,
+          modified_at: 1_756_288_600,
+        },
+      ],
+    }));
+    renderPage();
+
+    await screen.findByText("8.0 KB");
+    await userEvent.click(screen.getByRole("checkbox", { name: "Select documents" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select second.cbz" }), {
+      shiftKey: true,
+    });
+
+    expect(screen.getByRole("checkbox", { name: "Select documents" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Select book.cbz" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Select second.cbz" })).toBeChecked();
+    expect(screen.getByText("3 selected")).toBeInTheDocument();
   });
 
   it("moves an item with a navigable destination picker", async () => {

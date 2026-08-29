@@ -68,6 +68,7 @@ from .schemas import (
     FolderPageRead,
     GoogleClientPayload,
     JobRead,
+    KindleStorageBulkDeleteRequest,
     KindleStorageDeleteRequest,
     KindleStorageListingRead,
     KindleStorageMoveRequest,
@@ -655,6 +656,17 @@ def create_app(
     ) -> Response:
         try:
             configured_ssh_transport(_settings(session)).delete_storage_item(payload.path)
+        except Exception as error:
+            raise kindle_storage_error(error) from error
+        return Response(status_code=204)
+
+    @app.post("/api/kindle/files/bulk-delete", status_code=status.HTTP_204_NO_CONTENT)
+    def bulk_delete_kindle_storage_items(
+        payload: KindleStorageBulkDeleteRequest,
+        session: Session = Depends(session_dependency),
+    ) -> Response:
+        try:
+            configured_ssh_transport(_settings(session)).delete_storage_items(payload.paths)
         except Exception as error:
             raise kindle_storage_error(error) from error
         return Response(status_code=204)

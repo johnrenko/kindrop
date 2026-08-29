@@ -78,6 +78,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ path }),
     }),
+  bulkDeleteKindleItems: (paths: string[]) =>
+    request<void>("/api/kindle/files/bulk-delete", {
+      method: "POST",
+      body: JSON.stringify({ paths }),
+    }),
   profiles: () => request<KindleProfile[]>("/api/kindle-profiles"),
   scans: () => request<Scan[]>("/api/scans"),
   startScan: () => request<Scan>("/api/scans", { method: "POST" }),

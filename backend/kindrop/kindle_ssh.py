@@ -269,16 +269,44 @@ class KindleSshTransport:
         return str(destination)
 
     def delete_storage_item(self, path: str | PurePosixPath) -> None:
-        target = self._mutable_storage_path(path)
-        command = (
-            f"target={shlex.quote(str(target))}; "
-            f"target_parent={shlex.quote(str(target.parent))}; "
-            f"{self._storage_guard('target_parent')}; "
-            "if [ ! -e \"$target\" ] && [ ! -L \"$target\" ]; then "
-            f"printf 'NOT_FOUND\\n' >&2; exit {_STORAGE_NOT_FOUND_EXIT}; fi; "
-            "rm -rf \"$target\""
+        self.delete_storage_items([path])
+
+    def delete_storage_items(self, paths: Sequence[str | PurePosixPath]) -> None:
+        targets = [self._mutable_storage_path(path) for path in paths]
+        if not targets:
+            raise ValueError("At least one Kindle storage item must be selected")
+        if len(set(targets)) != len(targets):
+            raise ValueError("Each Kindle storage item can only be selected once")
+
+        assignments: list[str] = []
+        preflight: list[str] = []
+        delete_arguments: list[str] = []
+        for index, target in enumerate(targets):
+            target_variable = f"target_{index}"
+            parent_variable = f"target_parent_{index}"
+            assignments.extend(
+                [
+                    f"{target_variable}={shlex.quote(str(target))}",
+                    f"{parent_variable}={shlex.quote(str(target.parent))}",
+                ]
+            )
+            preflight.extend(
+                [
+                    self._storage_guard(parent_variable),
+                    f'if [ ! -e "${target_variable}" ] && [ ! -L "${target_variable}" ]; '
+                    f"then printf 'NOT_FOUND\\n' >&2; exit {_STORAGE_NOT_FOUND_EXIT}; fi",
+                ]
+            )
+            delete_arguments.append(f'"${target_variable}"')
+
+        script = "; ".join(
+            [*assignments, *preflight, f"rm -rf {' '.join(delete_arguments)}"]
+        ) + "\n"
+        self._run_storage_checked(
+            "sh -s",
+            operation="Kindle bulk delete",
+            input_text=script,
         )
-        self._run_storage_checked(command, operation="Kindle delete")
 
     def upload_storage_item(
         self,
@@ -503,11 +531,13 @@ class KindleSshTransport:
         *,
         operation: str,
         collision_path: str | None = None,
+        input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         try:
             result = self._run(
                 self._ssh_command(remote_command),
                 timeout=self.config.command_timeout_seconds,
+                input_text=input_text,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise KindleSshError(f"{operation} failed: {error}") from error

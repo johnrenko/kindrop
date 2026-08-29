@@ -175,6 +175,9 @@ def test_kindle_file_browser_lists_renames_moves_and_deletes(tmp_path) -> None:
         def delete_storage_item(self, path):
             calls.append(("delete", path))
 
+        def delete_storage_items(self, paths):
+            calls.append(("bulk-delete", paths))
+
     client = TestClient(
         create_app(database, ssh_transport_factory=lambda _config: FakeTransport())
     )
@@ -195,18 +198,46 @@ def test_kindle_file_browser_lists_renames_moves_and_deletes(tmp_path) -> None:
         "/api/kindle/files/delete",
         json={"path": "/mnt/us/documents/Archive/renamed.cbz"},
     )
+    bulk_deleted = client.post(
+        "/api/kindle/files/bulk-delete",
+        json={"paths": ["/mnt/us/documents/Manga", "/mnt/us/documents/book.cbz"]},
+    )
 
     assert listed.status_code == 200
     assert listed.json()["items"][1]["size_bytes"] == 4096
     assert renamed.json()["path"] == "/mnt/us/documents/renamed.cbz"
     assert moved.json()["path"] == "/mnt/us/documents/Archive/renamed.cbz"
     assert deleted.status_code == 204
+    assert bulk_deleted.status_code == 204
     assert calls == [
         ("list", "/mnt/us/documents"),
         ("rename", "/mnt/us/documents/book.cbz", "renamed.cbz"),
         ("move", "/mnt/us/documents/renamed.cbz", "/mnt/us/documents/Archive"),
         ("delete", "/mnt/us/documents/Archive/renamed.cbz"),
+        (
+            "bulk-delete",
+            ["/mnt/us/documents/Manga", "/mnt/us/documents/book.cbz"],
+        ),
     ]
+
+
+def test_kindle_bulk_delete_accepts_every_item_in_a_large_folder(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'test.db'}")
+    captured = []
+
+    class FakeTransport:
+        def delete_storage_items(self, paths):
+            captured.extend(paths)
+
+    client = TestClient(
+        create_app(database, ssh_transport_factory=lambda _config: FakeTransport())
+    )
+    paths = [f"/mnt/us/documents/book-{index}.cbz" for index in range(201)]
+
+    response = client.post("/api/kindle/files/bulk-delete", json={"paths": paths})
+
+    assert response.status_code == 204
+    assert captured == paths
 
 
 def test_kindle_file_browser_uploads_and_removes_its_local_temporary_file(tmp_path) -> None:

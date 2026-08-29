@@ -1,4 +1,4 @@
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -59,7 +59,14 @@ export function KindleFilesPage() {
   const [movePath, setMovePath] = useState(KINDLE_STORAGE_ROOT);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
+  const [deleteSuccess, setDeleteSuccess] = useState<string | null>(null);
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const uploadInput = useRef<HTMLInputElement>(null);
+  const selectionAnchor = useRef<string | null>(null);
+  const clearSelection = () => {
+    selectionAnchor.current = null;
+    setSelectedPaths([]);
+  };
   const clearUploadSelection = () => {
     setUploadFile(null);
     if (uploadInput.current) uploadInput.current.value = "";
@@ -75,6 +82,17 @@ export function KindleFilesPage() {
     enabled: Boolean(moveTarget),
   });
   const refreshFiles = () => client.invalidateQueries({ queryKey: queryKeys.kindleFiles });
+  useEffect(() => {
+    if (!listing.data) return;
+    const availablePaths = new Set(listing.data.items.map((item) => item.path));
+    if (selectionAnchor.current && !availablePaths.has(selectionAnchor.current)) {
+      selectionAnchor.current = null;
+    }
+    setSelectedPaths((current) => {
+      const availableSelection = current.filter((itemPath) => availablePaths.has(itemPath));
+      return availableSelection.length === current.length ? current : availableSelection;
+    });
+  }, [listing.data]);
   const rename = useMutation({
     mutationFn: ({ target, name }: { target: string; name: string }) =>
       api.renameKindleItem(target, name),
@@ -91,9 +109,23 @@ export function KindleFilesPage() {
       await refreshFiles();
     },
   });
-  const remove = useMutation({
+  const deleteItemMutation = useMutation({
     mutationFn: api.deleteKindleItem,
-    onSuccess: refreshFiles,
+    onSuccess: async (_result, removedPath) => {
+      if (selectionAnchor.current === removedPath) selectionAnchor.current = null;
+      setSelectedPaths((current) => current.filter((itemPath) => itemPath !== removedPath));
+      await refreshFiles();
+    },
+  });
+  const bulkDeleteMutation = useMutation({
+    mutationFn: api.bulkDeleteKindleItems,
+    onSuccess: async (_result, removedPaths) => {
+      clearSelection();
+      setDeleteSuccess(
+        `${removedPaths.length} ${removedPaths.length === 1 ? "item" : "items"} deleted from the Kindle.`,
+      );
+      await refreshFiles();
+    },
   });
   const upload = useMutation({
     mutationFn: ({ file, destination }: { file: File; destination: string }) =>
@@ -117,7 +149,59 @@ export function KindleFilesPage() {
   };
   const deleteItem = (item: KindleStorageItem) => {
     if (!window.confirm(`Delete “${item.name}” from the Kindle? This cannot be undone.`)) return;
-    remove.mutate(item.path);
+    setDeleteSuccess(null);
+    deleteItemMutation.mutate(item.path);
+  };
+  const openPath = (nextPath: string) => {
+    clearSelection();
+    setDeleteSuccess(null);
+    setPath(nextPath);
+  };
+  const toggleSelection = (itemPath: string, checked: boolean, extendRange: boolean) => {
+    bulkDeleteMutation.reset();
+    setDeleteSuccess(null);
+    const anchorPath = selectionAnchor.current;
+    setSelectedPaths((current) => {
+      const selected = new Set(current);
+      let affectedPaths = [itemPath];
+      if (extendRange && anchorPath && listing.data) {
+        const anchorIndex = listing.data.items.findIndex((item) => item.path === anchorPath);
+        const itemIndex = listing.data.items.findIndex((item) => item.path === itemPath);
+        if (anchorIndex >= 0 && itemIndex >= 0) {
+          const start = Math.min(anchorIndex, itemIndex);
+          const end = Math.max(anchorIndex, itemIndex);
+          affectedPaths = listing.data.items.slice(start, end + 1).map((item) => item.path);
+        }
+      }
+      for (const affectedPath of affectedPaths) {
+        if (checked) selected.add(affectedPath);
+        else selected.delete(affectedPath);
+      }
+      return listing.data
+        ? listing.data.items.map((item) => item.path).filter((path) => selected.has(path))
+        : [...selected];
+    });
+    selectionAnchor.current = itemPath;
+  };
+  const allItemsSelected = Boolean(
+    listing.data?.items.length
+    && listing.data.items.every((item) => selectedPaths.includes(item.path)),
+  );
+  const toggleAllItems = () => {
+    bulkDeleteMutation.reset();
+    setDeleteSuccess(null);
+    selectionAnchor.current = null;
+    setSelectedPaths(
+      allItemsSelected ? [] : (listing.data?.items.map((item) => item.path) ?? []),
+    );
+  };
+  const deleteSelected = () => {
+    const count = selectedPaths.length;
+    if (!count) return;
+    const noun = count === 1 ? "item" : "items";
+    if (!window.confirm(`Delete ${count} selected ${noun} from the Kindle? This cannot be undone.`)) return;
+    setDeleteSuccess(null);
+    bulkDeleteMutation.mutate(selectedPaths);
   };
 
   return (
@@ -145,7 +229,7 @@ export function KindleFilesPage() {
             type="button"
             aria-label="Go to parent folder"
             disabled={!listing.data?.parent}
-            onClick={() => listing.data?.parent && setPath(listing.data.parent)}
+            onClick={() => listing.data?.parent && openPath(listing.data.parent)}
           >
             <ArrowLeft size={19} />
           </button>
@@ -153,7 +237,7 @@ export function KindleFilesPage() {
             {breadcrumbs(listing.data, path).map((crumb, index, all) => (
               <span key={crumb.path}>
                 {index > 0 && <ChevronRight size={14} aria-hidden="true" />}
-                <button type="button" onClick={() => setPath(crumb.path)} aria-current={index === all.length - 1 ? "page" : undefined}>
+                <button type="button" onClick={() => openPath(crumb.path)} aria-current={index === all.length - 1 ? "page" : undefined}>
                   {index === 0 && <HardDrive size={15} aria-hidden="true" />}
                   {crumb.name}
                 </button>
@@ -184,6 +268,20 @@ export function KindleFilesPage() {
           </div>
         </div>
 
+        {selectedPaths.length > 0 && (
+          <div className="kindle-selection-bar">
+            <strong>{selectedPaths.length} selected</strong>
+            <div>
+              <button className="button button--secondary" type="button" onClick={clearSelection} disabled={bulkDeleteMutation.isPending}>
+                Clear selection
+              </button>
+              <button className="button kindle-selection-bar__delete" type="button" onClick={deleteSelected} disabled={bulkDeleteMutation.isPending}>
+                <Trash2 size={16} /> {bulkDeleteMutation.isPending ? "Deleting…" : "Delete selected"}
+              </button>
+            </div>
+          </div>
+        )}
+
         {listing.isLoading && <div className="kindle-browser__state">Reading Kindle storage…</div>}
         {listing.error && (
           <div className="kindle-browser__state kindle-browser__state--error">
@@ -196,32 +294,49 @@ export function KindleFilesPage() {
         )}
         {listing.data && listing.data.items.length > 0 && (
           <div className="kindle-file-table">
-            <div className="kindle-file-table__head" aria-hidden="true">
+            <div className="kindle-file-table__head">
+              <label className="kindle-file-select">
+                <input type="checkbox" aria-label="Select all items" checked={allItemsSelected} onChange={toggleAllItems} disabled={bulkDeleteMutation.isPending} />
+              </label>
               <span>Name</span><span>Size</span><span>Modified</span><span>Actions</span>
             </div>
             <ul>
               {listing.data.items.map((item) => (
-                <li key={item.path} className="kindle-file-row">
+                <li key={item.path} className={`kindle-file-row${selectedPaths.includes(item.path) ? " kindle-file-row--selected" : ""}`}>
+                  <label className="kindle-file-select">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${item.name}`}
+                      checked={selectedPaths.includes(item.path)}
+                      onChange={(event) => toggleSelection(
+                        item.path,
+                        event.currentTarget.checked,
+                        (event.nativeEvent as MouseEvent).shiftKey,
+                      )}
+                      disabled={bulkDeleteMutation.isPending}
+                    />
+                  </label>
                   <div className="kindle-file-row__name">
                     {item.kind === "directory" ? <Folder size={20} /> : <File size={20} />}
                     {item.kind === "directory" ? (
-                      <button type="button" onClick={() => setPath(item.path)} aria-label={`Open ${item.name}`}>{item.name}</button>
+                      <button type="button" onClick={() => openPath(item.path)} aria-label={`Open ${item.name}`}>{item.name}</button>
                     ) : <strong>{item.name}</strong>}
                     <small>{item.kind}</small>
                   </div>
                   <span>{item.kind === "file" ? formatBytes(item.size_bytes) : "—"}</span>
                   <time dateTime={item.modified_at ? new Date(item.modified_at * 1000).toISOString() : undefined}>{formatModified(item.modified_at)}</time>
                   <div className="kindle-file-row__actions">
-                    <button type="button" aria-label={`Rename ${item.name}`} title="Rename" onClick={() => openRename(item)}><Pencil size={17} /></button>
-                    <button type="button" aria-label={`Move ${item.name}`} title="Move" onClick={() => openMove(item)}><FolderInput size={17} /></button>
-                    <button type="button" aria-label={`Delete ${item.name}`} title="Delete" onClick={() => deleteItem(item)} disabled={remove.isPending}><Trash2 size={17} /></button>
+                    <button type="button" aria-label={`Rename ${item.name}`} title="Rename" onClick={() => openRename(item)} disabled={bulkDeleteMutation.isPending}><Pencil size={17} /></button>
+                    <button type="button" aria-label={`Move ${item.name}`} title="Move" onClick={() => openMove(item)} disabled={bulkDeleteMutation.isPending}><FolderInput size={17} /></button>
+                    <button type="button" aria-label={`Delete ${item.name}`} title="Delete" onClick={() => deleteItem(item)} disabled={deleteItemMutation.isPending || bulkDeleteMutation.isPending}><Trash2 size={17} /></button>
                   </div>
                 </li>
               ))}
             </ul>
           </div>
         )}
-        {remove.error && <p className="form-error kindle-browser__error">{remove.error.message}</p>}
+        {(deleteItemMutation.error || bulkDeleteMutation.error) && <p className="form-error kindle-browser__error">{(deleteItemMutation.error ?? bulkDeleteMutation.error)?.message}</p>}
+        {deleteSuccess && <p className="kindle-browser__success" role="status">{deleteSuccess}</p>}
         {uploadSuccess && <p className="kindle-browser__success" role="status">{uploadSuccess}</p>}
       </section>
 

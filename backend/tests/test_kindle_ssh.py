@@ -170,9 +170,37 @@ def test_browser_moves_and_deletes_items_but_never_the_storage_root(tmp_path: Pa
 
     assert moved == "/mnt/us/documents/Archive/book.cbz"
     assert "mv \"$source\" \"$destination\"" in runner.commands[0][-1]
-    assert "rm -rf \"$target\"" in runner.commands[1][-1]
+    assert runner.commands[1][-1] == "sh -s"
+    assert 'rm -rf "$target_0"' in (runner.inputs[1] or "")
     with pytest.raises(ValueError, match="storage root"):
         transport.delete_storage_item("/mnt/us")
+
+
+def test_browser_bulk_delete_preflights_then_removes_all_items(tmp_path: Path):
+    runner = FakeCommandRunner([completed()])
+    transport = KindleSshTransport(config(tmp_path), runner=runner)
+
+    transport.delete_storage_items(
+        ["/mnt/us/documents/old.cbz", "/mnt/us/documents/Archive"]
+    )
+
+    assert runner.commands[0][-1] == "sh -s"
+    script = runner.inputs[0] or ""
+    first_check = script.index('if [ ! -e "$target_0" ]')
+    second_check = script.index('if [ ! -e "$target_1" ]')
+    first_delete = script.index('rm -rf "$target_0"')
+    assert first_check < second_check < first_delete
+    assert 'rm -rf "$target_0" "$target_1"' in script
+
+
+def test_browser_bulk_delete_rejects_the_storage_root_before_connecting(tmp_path: Path):
+    runner = FakeCommandRunner([])
+    transport = KindleSshTransport(config(tmp_path), runner=runner)
+
+    with pytest.raises(ValueError, match="storage root"):
+        transport.delete_storage_items(["/mnt/us/documents/book.cbz", "/mnt/us"])
+
+    assert runner.commands == []
 
 
 def test_browser_uploads_a_local_file_atomically_into_the_selected_folder(tmp_path: Path):

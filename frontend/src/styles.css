@@ -302,15 +302,23 @@
   .kindle-browser__toolbar-actions { display: flex; align-items: center; gap: .6rem; }
   .kindle-browser__upload { min-height: 40px; padding: .5rem .75rem; white-space: nowrap; }
   .kindle-browser__success { margin: 0; padding: .75rem 1rem; border-top: 1px solid var(--line); color: oklch(43% .11 145); font-size: .82rem; font-weight: 650; }
+  .kindle-selection-bar { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .55rem .75rem .55rem 1rem; border-bottom: 1px solid var(--ink); background: var(--paper-deep); }
+  .kindle-selection-bar > strong { font-size: .82rem; }
+  .kindle-selection-bar > div { display: flex; gap: .5rem; }
+  .kindle-selection-bar .button { min-height: 40px; padding: .5rem .75rem; }
+  .kindle-selection-bar__delete { border-color: var(--red); background: var(--red); color: white; }
   .kindle-browser__state { min-height: 230px; display: flex; align-items: center; justify-content: center; gap: 1rem; padding: 2rem; color: var(--muted); text-align: left; }
   .kindle-browser__state p { margin: .3rem 0 0; }
   .kindle-browser__state--error { color: var(--red); }
-  .kindle-file-table__head, .kindle-file-row { display: grid; grid-template-columns: minmax(240px, 1fr) 100px minmax(150px, .45fr) 132px; align-items: center; gap: 1rem; }
+  .kindle-file-table__head, .kindle-file-row { display: grid; grid-template-columns: 26px minmax(240px, 1fr) 100px minmax(150px, .45fr) 132px; align-items: center; gap: 1rem; }
   .kindle-file-table__head { min-height: 42px; padding: 0 1rem; border-bottom: 1px solid var(--line); color: var(--muted); font-size: .65rem; font-weight: 700; text-transform: uppercase; letter-spacing: .11em; }
   .kindle-file-table ul { margin: 0; padding: 0; list-style: none; }
   .kindle-file-row { min-height: 68px; padding: .65rem 1rem; border-bottom: 1px solid var(--line); }
   .kindle-file-row:last-child { border-bottom: 0; }
   .kindle-file-row:hover { background: var(--paper-deep); }
+  .kindle-file-row--selected { background: oklch(85% .08 75 / 24%); }
+  .kindle-file-select { width: 26px; height: 40px; display: grid; place-items: center; cursor: pointer; }
+  .kindle-file-select input { width: 17px; height: 17px; margin: 0; accent-color: var(--accent); cursor: pointer; }
   .kindle-file-row > span, .kindle-file-row > time { color: var(--muted); font-size: .78rem; }
   .kindle-file-row__name { min-width: 0; display: grid; grid-template-columns: 1.6rem minmax(0, auto) 1fr; align-items: center; gap: .65rem; }
   .kindle-file-row__name > svg { color: var(--accent); }
@@ -398,9 +406,11 @@
     .kindle-browser__toolbar-actions { grid-column: 1 / -1; justify-content: flex-end; padding: 0 .1rem .25rem; }
     .kindle-browser__count { display: none; }
     .kindle-file-table__head { display: none; }
-    .kindle-file-row { grid-template-columns: minmax(0, 1fr) auto; gap: .35rem 1rem; }
-    .kindle-file-row > span, .kindle-file-row > time { grid-column: 1; padding-left: 2.25rem; }
-    .kindle-file-row__actions { grid-column: 2; grid-row: 1 / span 3; align-self: center; flex-direction: column; }
+    .kindle-selection-bar { align-items: stretch; flex-direction: column; }
+    .kindle-selection-bar > div { display: grid; grid-template-columns: 1fr 1fr; }
+    .kindle-file-row { grid-template-columns: 26px minmax(0, 1fr) auto; gap: .35rem .65rem; }
+    .kindle-file-row > span, .kindle-file-row > time { grid-column: 2; padding-left: 2.25rem; }
+    .kindle-file-row__actions { grid-column: 3; grid-row: 1 / span 3; align-self: center; flex-direction: column; }
   }
 
   @media (prefers-reduced-motion: reduce) {
