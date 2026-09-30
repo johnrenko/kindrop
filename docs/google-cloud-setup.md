@@ -41,6 +41,18 @@ In Kindrop, open **Settings**, choose the JSON under **Google connection**, and 
 http://127.0.0.1:8787/api/oauth/callback
 ```
 
+For a private HTTPS reverse proxy such as Tailscale Serve, set
+`KINDROP_APP_BASE_URL` to that HTTPS address in `.env` and recreate the containers.
+Create a **Web application** OAuth client instead of a Desktop client and register
+the exact authorized redirect URI, for example:
+
+```text
+https://homeserver.tail4fc390.ts.net:8445/api/oauth/callback
+```
+
+Upload that client's JSON and start a new connection from the private HTTPS page.
+Previously started connection flows must be restarted after the URL change.
+
 The client JSON and OAuth refresh token are encrypted locally. Kindrop never needs your Google password.
 
 ## 5. Authorize the sender in Amazon

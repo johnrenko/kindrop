@@ -2,7 +2,7 @@
 
 Kindrop is a personal, local-only web app that prepares CBR/CBZ/PDF/EPUB files from one Google Drive folder and copies them directly into KOReader over the Kindle's SSH server. KCC optimization targets Paperwhite 1/2 (`KPW`); Gmail remains an explicit manual fallback.
 
-Kindrop never modifies the source files in Drive. The application listens only on `127.0.0.1:8787` and has no application login because it is designed for a single user on one trusted computer.
+Kindrop never modifies the source files in Drive. The application listens only on `127.0.0.1:8787` and has no application login because it is designed for a single user. It can also be accessed through a trusted private reverse proxy by setting `KINDROP_APP_BASE_URL` in `.env` to its HTTPS URL. Only localhost and that configured hostname are accepted; remote mutation origins must match its scheme, hostname and port.
 
 ## Start with Docker Compose
 
@@ -69,3 +69,15 @@ The frontend development server proxies `/api` to `127.0.0.1:8787`.
 Kindrop accepts `My Drive` folders only, reads CBR/CBZ/PDF/EPUB files without writing back to Drive, and can write only below `/mnt/us/documents/KOReader/Kindrop`. Untracked collisions block, a batch must preserve 100 MiB of free space, and only the manual Gmail fallback applies the 20 MiB artifact limit.
 
 The first release is intentionally limited to one Google account, one Kindle destination, and a single sequential worker. See [CONTEXT.md](CONTEXT.md) and the [architecture decisions](docs/adr/) for the product boundaries.
+
+## Private Tailscale access
+
+Set `KINDROP_APP_BASE_URL=https://homeserver.tail4fc390.ts.net:8445` in `.env`,
+then run `sudo tailscale serve --bg --https=8445 http://127.0.0.1:8787` and
+`docker compose up -d --build --wait`. Keep the Docker port bound to localhost
+and use Serve only within the trusted tailnet. Do not enable Funnel.
+
+For Google OAuth over HTTPS, use a Web application client and register the exact
+`${KINDROP_APP_BASE_URL}/api/oauth/callback` redirect URI; see
+[Google Cloud setup](docs/google-cloud-setup.md). Restart the Google connection
+flow after changing the base URL; an earlier flow uses its original redirect URI.

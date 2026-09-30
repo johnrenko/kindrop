@@ -15,7 +15,7 @@ x-kindrop-service: &kindrop-service
     KINDROP_DATABASE_URL: sqlite:////data/kindrop.db
     KINDROP_CACHE_ROOT: /cache
     KINDROP_SECRET_KEY_FILE: /run/secrets/kindrop.key
-    KINDROP_APP_BASE_URL: http://127.0.0.1:8787
+    KINDROP_APP_BASE_URL: ${KINDROP_APP_BASE_URL:-http://127.0.0.1:8787}
     KINDROP_FRONTEND_DIST: /app/frontend
     TMPDIR: /cache/tmp
   volumes:

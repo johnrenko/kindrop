@@ -328,20 +328,51 @@ def create_app(
             service_factory = GoogleServiceFactory(database, SecretStore(runtime.secret_key_file))
         return service_factory
 
+    local_hosts = {"127.0.0.1", "localhost", "testserver"}
+    configured_url = urlparse(runtime.app_base_url)
+    allowed_hosts = local_hosts | {configured_url.hostname}
+    configured_origin = (
+        configured_url.scheme,
+        configured_url.hostname,
+        configured_url.port or (443 if configured_url.scheme == "https" else 80),
+    )
+
     @app.middleware("http")
-    async def localhost_only(request: Request, call_next):
+    async def private_access_only(request: Request, call_next):
         hostname = request.url.hostname
-        if hostname not in {"127.0.0.1", "localhost", "testserver", None}:
+        if hostname is None or hostname not in allowed_hosts:
             return JSONResponse(
-                status_code=400, content={"detail": "Kindrop only accepts localhost requests"}
+                status_code=400, content={"detail": "The request host is not allowed"}
             )
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             origin = request.headers.get("origin")
-            if origin and urlparse(origin).hostname not in {"127.0.0.1", "localhost", "testserver"}:
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "The request origin is not allowed"},
-                )
+            if origin:
+                try:
+                    parsed_origin = urlparse(origin)
+                    origin_identity = (
+                        parsed_origin.scheme,
+                        parsed_origin.hostname,
+                        parsed_origin.port or (443 if parsed_origin.scheme == "https" else 80),
+                    )
+                    allowed_origin = (
+                        parsed_origin.scheme in {"http", "https"}
+                        and not parsed_origin.username
+                        and not parsed_origin.password
+                        and not parsed_origin.path
+                        and not parsed_origin.query
+                        and not parsed_origin.fragment
+                        and (
+                            parsed_origin.hostname in local_hosts
+                            or origin_identity == configured_origin
+                        )
+                    )
+                except ValueError:
+                    allowed_origin = False
+                if not allowed_origin:
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "The request origin is not allowed"},
+                    )
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -396,7 +427,7 @@ def create_app(
         if not settings.encrypted_google_client:
             raise HTTPException(status_code=409, detail="Upload a Google OAuth client first")
         client = SecretStore(runtime.secret_key_file).decrypt_json(settings.encrypted_google_client)
-        redirect_uri = f"{runtime.app_base_url}/api/oauth/callback"
+        redirect_uri = f"{runtime.app_base_url.rstrip('/')}/api/oauth/callback"
         url, state_value, code_verifier = authorization_url(client, redirect_uri)
         settings.oauth_state = state_value
         settings.oauth_code_verifier = code_verifier
@@ -423,7 +454,7 @@ def create_app(
         client = store.decrypt_json(settings.encrypted_google_client)
         token = exchange_code(
             client,
-            f"{runtime.app_base_url}/api/oauth/callback",
+            f"{runtime.app_base_url.rstrip('/')}/api/oauth/callback",
             state,
             code,
             settings.oauth_code_verifier,
